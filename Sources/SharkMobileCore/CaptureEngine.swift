@@ -123,6 +123,18 @@ public final class CaptureEngine: ObservableObject {
         missionManager.log(severity: "INJECT", tag: "PROBE", message: "Triggered live Wi-Fi HTTP probe & Local Proxy Tap on 127.0.0.1:8888")
     }
 
+    public func triggerGattCommunication() {
+        realCapturePipeline.bleCapture.deliverSyntheticBleGatt(
+            opcode: 0x1B, // ATT Handle Value Notification
+            payload: Data([0x2A, 0x37, 0x00, 0x4B, 0x03, 0xE8, 0x03]) // Heart Rate Measurement: 75 bpm + RR intervals
+        )
+        realCapturePipeline.bleCapture.deliverSyntheticBleGatt(
+            opcode: 0x52, // ATT Write Command
+            payload: Data([0x2A, 0x19, 0x64]) // Battery Level: 100%
+        )
+        missionManager.log(severity: "INFO", tag: "BLE", message: "Injected bidirectional Bluetooth GATT ATT transaction stream")
+    }
+
     public func clear() {
         packets.removeAll()
         capturedCount = 0

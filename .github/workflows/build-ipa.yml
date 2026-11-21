@@ -28,6 +28,12 @@ jobs:
           swiftc -O \
             -target arm64-apple-ios16.0 \
             -sdk $(xcrun --sdk iphoneos --show-sdk-path) \
+            -framework NetworkExtension \
+            -framework CoreBluetooth \
+            -framework Network \
+            -framework Security \
+            -framework LocalAuthentication \
+            -framework CoreLocation \
             -o build/Payload/SharkMobile.app/SharkMobile \
             Sources/SharkMobileCore/*.swift
 

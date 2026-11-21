@@ -1019,6 +1019,7 @@ public struct FlowLadderSheetView: View {
 public struct VaultAndRadiosView: View {
     @ObservedObject var engine: CaptureEngine
     @ObservedObject var bleScanner: BleAirspaceScanner
+    @ObservedObject private var vpnManager = SharkVPNManager.shared
     @Binding var isNightVision: Bool
 
     public var body: some View {
@@ -1073,6 +1074,47 @@ public struct VaultAndRadiosView: View {
                     }
                 }
 
+                Section(header: Text("SharkVPN Local Packet Interceptor")) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Tunnel Subsystem")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(vpnManager.state.rawValue)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(vpnManager.state == .connected ? .green : .secondary)
+                        }
+                        Spacer()
+                        Button(action: {
+                            if vpnManager.state == .connected {
+                                vpnManager.stopVPN()
+                            } else {
+                                vpnManager.setupAndEnableVPN()
+                            }
+                        }) {
+                            Text(vpnManager.state == .connected ? "Stop VPN" : "Enable VPN")
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(vpnManager.state == .connected ? Color.red : Color.green)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+                        }
+                    }
+
+                    Text(vpnManager.statusMessage)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+
+                    Button(action: { exportMobileConfig() }) {
+                        HStack {
+                            Image(systemName: "arrow.down.doc.fill")
+                            Text("Export .mobileconfig Profile (Non-Root Settings)")
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color(hex: "#00E5FF"))
+                    }
+                }
+
                 Section(header: Text("PCAP-NG Vault & Sharing")) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1113,12 +1155,25 @@ public struct VaultAndRadiosView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        Button(action: { bleScanner.startScan() }) {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 12))
-                                .padding(6)
-                                .background(Color.secondary.opacity(0.12))
+                        HStack(spacing: 6) {
+                            Button(action: { engine.triggerGattCommunication() }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "bolt.horizontal.fill")
+                                    Text("GATT Stream")
+                                }
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(5)
+                                .background(Color.blue.opacity(0.15))
+                                .foregroundColor(.blue)
                                 .cornerRadius(6)
+                            }
+                            Button(action: { bleScanner.startScan() }) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 12))
+                                    .padding(6)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .cornerRadius(6)
+                            }
                         }
                     }
 
@@ -1211,6 +1266,29 @@ public struct VaultAndRadiosView: View {
             }
             root.present(av, animated: true)
         }
+        #endif
+    }
+
+    private func exportMobileConfig() {
+        let data = vpnManager.generateMobileConfig()
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("SharkMobile_Interceptor.mobileconfig")
+        try? data.write(to: tempURL)
+
+        #if canImport(UIKit)
+        let av = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
+        if let windowScene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+           let root = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController ?? windowScene.windows.first?.rootViewController {
+            if let popover = av.popoverPresentationController {
+                popover.sourceView = root.view
+                popover.sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            root.present(av, animated: true)
+        }
+        #elseif os(macOS)
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: "/tmp")
+        let dest = downloads.appendingPathComponent("SharkMobile_Interceptor.mobileconfig")
+        try? data.write(to: dest)
         #endif
     }
 }

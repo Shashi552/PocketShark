@@ -333,6 +333,14 @@ public final class BleAirspaceCapture: NSObject, @unchecked Sendable {
         discoveredBleCount += 1
         packetHandler?(frame, "ble0 (BLE Radio)")
     }
+
+    public func deliverSyntheticBleGatt(opcode: UInt8, payload: Data) {
+        var frame = Data([0x42, 0x4C, 0x45, opcode])
+        frame.append(payload)
+        while frame.count < 8 { frame.append(0) }
+        discoveredBleCount += 1
+        packetHandler?(frame, "ble0 (BLE Radio)")
+    }
 }
 
 #if canImport(CoreBluetooth)

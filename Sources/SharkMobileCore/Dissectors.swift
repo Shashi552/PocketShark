@@ -26,40 +26,83 @@ public struct PacketDissector {
             byteRange: 0..<rawData.count
         ))
 
-        // Check for BLE Pseudo-Header
+        // Check for BLE Pseudo-Header (Advertising or Active GATT / ATT Communication)
         if rawData.count >= 8 && rawData[0] == 0x42 && rawData[1] == 0x4C && rawData[2] == 0x45 { // "BLE" magic
             proto = .ble
-            src = "BLE Adv Radio"
-            dst = "Broadcast (FF:FF:FF:FF:FF:FF)"
-            let rssi = Int8(bitPattern: rawData[3])
-            let mfgData = rawData.subdata(in: 4..<rawData.count)
-            let mfgHex = mfgData.map { String(format: "%02X", $0) }.joined(separator: " ")
-            var continuity = "Unknown Manufacturer Data"
-            if mfgData.count >= 2 && mfgData[0] == 0x4C && mfgData[1] == 0x00 {
-                if mfgData.count > 2 {
-                    switch mfgData[2] {
-                    case 0x07: continuity = "Apple AirPods Proximity Pairing"
-                    case 0x09: continuity = "Apple AirDrop Beacon"
-                    case 0x10: continuity = "Apple Handoff / Nearby Action"
-                    case 0x12: continuity = "Apple FindMy / AirTag Tracker Beacon"
-                    case 0x0D: continuity = "AppleTV / HomePod Proximity Setup"
-                    default: continuity = String(format: "Apple Continuity (0x%02X)", mfgData[2])
+            let opcodeOrRssi = rawData[3]
+
+            // Check if this is an Active GATT / ATT Transaction (Opcode 0x0A Read, 0x0B Read Resp, 0x12/0x52 Write, 0x1B Notify, 0x1D Indicate)
+            if opcodeOrRssi == 0x1B || opcodeOrRssi == 0x1D {
+                src = "BLE Peripheral (GATT Server)"
+                dst = "Central (Host / iPhone)"
+                let payload = rawData.subdata(in: 4..<rawData.count)
+                let payloadHex = payload.map { String(format: "%02X", $0) }.joined(separator: " ")
+                let opName = opcodeOrRssi == 0x1B ? "Handle Value Notification" : "Handle Value Indication"
+                info = "BLE ATT \(opName) [Len=\(payload.count)]: \(payloadHex)"
+                expert = ExpertInfo(severity: .chat, message: "Active Bluetooth GATT Telemetry Stream", group: "BLE")
+
+                layers.append(DissectedLayer(
+                    name: "Bluetooth Attribute Protocol (ATT)",
+                    summary: info,
+                    fields: [
+                        FieldDetail(name: "ATT Opcode", value: String(format: "0x%02X (%@)", opcodeOrRssi, opName), byteRange: 3..<4),
+                        FieldDetail(name: "Attribute Value Data", value: payloadHex, byteRange: 4..<rawData.count)
+                    ],
+                    byteRange: 0..<rawData.count
+                ))
+            } else if opcodeOrRssi == 0x12 || opcodeOrRssi == 0x52 {
+                src = "Central (Host / iPhone)"
+                dst = "BLE Peripheral (GATT Server)"
+                let payload = rawData.subdata(in: 4..<rawData.count)
+                let payloadHex = payload.map { String(format: "%02X", $0) }.joined(separator: " ")
+                let opName = opcodeOrRssi == 0x12 ? "Write Request" : "Write Command"
+                info = "BLE ATT \(opName) [Len=\(payload.count)]: \(payloadHex)"
+                expert = ExpertInfo(severity: .note, message: "Bluetooth Central-to-Peripheral Command", group: "BLE")
+
+                layers.append(DissectedLayer(
+                    name: "Bluetooth Attribute Protocol (ATT)",
+                    summary: info,
+                    fields: [
+                        FieldDetail(name: "ATT Opcode", value: String(format: "0x%02X (%@)", opcodeOrRssi, opName), byteRange: 3..<4),
+                        FieldDetail(name: "Written Value Data", value: payloadHex, byteRange: 4..<rawData.count)
+                    ],
+                    byteRange: 0..<rawData.count
+                ))
+            } else {
+                // Standard Over-The-Air BLE Advertising Beacon
+                src = "BLE Adv Radio"
+                dst = "Broadcast (FF:FF:FF:FF:FF:FF)"
+                let rssi = Int8(bitPattern: opcodeOrRssi)
+                let mfgData = rawData.subdata(in: 4..<rawData.count)
+                let mfgHex = mfgData.map { String(format: "%02X", $0) }.joined(separator: " ")
+                var continuity = "Unknown Manufacturer Data"
+                if mfgData.count >= 2 && mfgData[0] == 0x4C && mfgData[1] == 0x00 {
+                    if mfgData.count > 2 {
+                        switch mfgData[2] {
+                        case 0x07: continuity = "Apple AirPods Proximity Pairing"
+                        case 0x09: continuity = "Apple AirDrop Beacon"
+                        case 0x10: continuity = "Apple Handoff / Nearby Action"
+                        case 0x12: continuity = "Apple FindMy / AirTag Tracker Beacon"
+                        case 0x0D: continuity = "AppleTV / HomePod Proximity Setup"
+                        default: continuity = String(format: "Apple Continuity (0x%02X)", mfgData[2])
+                        }
                     }
                 }
+                info = "BLE ADV_NONCONN_IND [\(continuity)] RSSI=\(rssi) dBm"
+                expert = ExpertInfo(severity: .chat, message: "Bluetooth Low Energy Advertisement Beacon", group: "BLE")
+                layers.append(DissectedLayer(
+                    name: "Bluetooth Low Energy Link Layer",
+                    summary: info,
+                    fields: [
+                        FieldDetail(name: "Access Address", value: "0x8E89BED6 (Advertising Channel)", byteRange: 0..<4),
+                        FieldDetail(name: "Signal Strength (RSSI)", value: "\(rssi) dBm", byteRange: 3..<4),
+                        FieldDetail(name: "Continuity Classification", value: continuity),
+                        FieldDetail(name: "Raw Manufacturer Payload", value: mfgHex, byteRange: 4..<rawData.count)
+                    ],
+                    byteRange: 0..<rawData.count
+                ))
             }
-            info = "BLE ADV_NONCONN_IND [\(continuity)] RSSI=\(rssi) dBm"
-            expert = ExpertInfo(severity: .chat, message: "Bluetooth Low Energy Advertisement Beacon", group: "BLE")
-            layers.append(DissectedLayer(
-                name: "Bluetooth Low Energy Link Layer",
-                summary: info,
-                fields: [
-                    FieldDetail(name: "Access Address", value: "0x8E89BED6 (Advertising Channel)", byteRange: 0..<4),
-                    FieldDetail(name: "Signal Strength (RSSI)", value: "\(rssi) dBm", byteRange: 3..<4),
-                    FieldDetail(name: "Continuity Classification", value: continuity),
-                    FieldDetail(name: "Raw Manufacturer Payload", value: mfgHex, byteRange: 4..<rawData.count)
-                ],
-                byteRange: 0..<rawData.count
-            ))
+
             return PacketRecord(
                 id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto,
                 length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface,
