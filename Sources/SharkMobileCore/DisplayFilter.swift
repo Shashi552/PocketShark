@@ -37,6 +37,12 @@ public struct DisplayFilter {
         if expr == "dhcp" || expr == "bootp" { return packet.protocolType == .dhcp || packet.layers.contains { $0.name.contains("DHCP") || $0.name.contains("BOOTP") } }
         if expr == "ssdp" { return packet.protocolType == .ssdp || packet.layers.contains { $0.name.contains("SSDP") } }
 
+        // Expert Info Severity Filters (1-tap via Expert Pills)
+        if expr == "error" || expr == "errors" { return packet.expertInfo?.severity == .error }
+        if expr == "warn" || expr == "warning" || expr == "warnings" { return packet.expertInfo?.severity == .warning }
+        if expr == "note" || expr == "notes" { return packet.expertInfo?.severity == .note }
+        if expr == "chat" || expr == "chats" { return packet.expertInfo?.severity == .chat }
+
         // IP Address matching with exact match (avoiding 192.168.1.1 matching 192.168.1.100)
         if expr.hasPrefix("ip.addr ==") || expr.hasPrefix("ip.addr==") {
             let target = expr.components(separatedBy: "==").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

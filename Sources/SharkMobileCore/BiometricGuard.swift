@@ -2,6 +2,9 @@ import Foundation
 #if canImport(LocalAuthentication)
 import LocalAuthentication
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 public final class BiometricGuard: ObservableObject {
@@ -13,6 +16,15 @@ public final class BiometricGuard: ObservableObject {
 
     public init() {
         checkBiometricAvailability()
+        #if canImport(UIKit)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.lockImmediately()
+        }
+        #endif
     }
 
     public func checkBiometricAvailability() {
@@ -55,7 +67,11 @@ public final class BiometricGuard: ObservableObject {
                         self?.authErrorMessage = nil
                         completion(true)
                     } else {
-                        self?.authErrorMessage = evalError?.localizedDescription ?? "Authentication failed"
+                        if let laErr = evalError as? LAError, laErr.code == .userCancel || laErr.code == .systemCancel {
+                            self?.authErrorMessage = nil
+                        } else {
+                            self?.authErrorMessage = evalError?.localizedDescription ?? "Authentication failed"
+                        }
                         completion(false)
                     }
                 }

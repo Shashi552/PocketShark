@@ -264,6 +264,36 @@ public struct SnifferDashboardView: View {
                         .onTapGesture {
                             self.inspectedPacket = packet
                         }
+                        .contextMenu {
+                            Button(action: {
+                                self.followTargetPacket = packet
+                                self.showingFollowStream = true
+                            }) {
+                                Label("Follow TCP Stream", systemImage: "arrow.triangle.swap")
+                            }
+                            Button(action: {
+                                self.filterText = "ip.addr == \(packet.source)"
+                            }) {
+                                Label("Filter Source: \(packet.source)", systemImage: "arrow.right.circle")
+                            }
+                            Button(action: {
+                                self.filterText = "ip.addr == \(packet.destination)"
+                            }) {
+                                Label("Filter Destination: \(packet.destination)", systemImage: "arrow.left.circle")
+                            }
+                            Button(action: {
+                                self.filterText = packet.protocolType.rawValue.lowercased()
+                            }) {
+                                Label("Filter Protocol: \(packet.protocolType.rawValue)", systemImage: "line.3.horizontal.decrease")
+                            }
+                            #if canImport(UIKit)
+                            Button(action: {
+                                UIPasteboard.general.string = packet.info
+                            }) {
+                                Label("Copy Summary Info", systemImage: "doc.on.doc")
+                            }
+                            #endif
+                        }
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                         .listRowBackground(Color(hex: packet.protocolType.colorHex).opacity(0.55))
                 }
@@ -325,10 +355,10 @@ struct ExpertInfoBarView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            ExpertPill(severity: .error, count: errorCount)
-            ExpertPill(severity: .warning, count: warningCount)
-            ExpertPill(severity: .note, count: noteCount)
-            ExpertPill(severity: .chat, count: chatCount)
+            ExpertPill(severity: .error, count: errorCount, activeFilter: $activeFilter)
+            ExpertPill(severity: .warning, count: warningCount, activeFilter: $activeFilter)
+            ExpertPill(severity: .note, count: noteCount, activeFilter: $activeFilter)
+            ExpertPill(severity: .chat, count: chatCount, activeFilter: $activeFilter)
             Spacer()
         }
     }
@@ -337,19 +367,36 @@ struct ExpertInfoBarView: View {
 struct ExpertPill: View {
     let severity: ExpertSeverity
     let count: Int
+    @Binding var activeFilter: String
+
+    var isSelected: Bool {
+        activeFilter.lowercased() == severity.rawValue.lowercased()
+    }
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: severity.badgeIcon)
-                .font(.system(size: 9))
-            Text("\(severity.rawValue): \(count)")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+        Button(action: {
+            if isSelected {
+                activeFilter = ""
+            } else {
+                activeFilter = severity.rawValue.lowercased()
+            }
+        }) {
+            HStack(spacing: 3) {
+                Image(systemName: severity.badgeIcon)
+                    .font(.system(size: 9))
+                Text("\(severity.rawValue): \(count)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .foregroundColor(Color(hex: severity.colorHex))
+            .background(isSelected ? Color(hex: severity.colorHex).opacity(0.35) : Color(hex: severity.colorHex).opacity(0.15))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isSelected ? Color(hex: severity.colorHex) : Color.clear, lineWidth: 1)
+            )
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .foregroundColor(Color(hex: severity.colorHex))
-        .background(Color(hex: severity.colorHex).opacity(0.15))
-        .cornerRadius(6)
     }
 }
 
@@ -482,18 +529,37 @@ public struct PacketInspectorModalView: View {
                     }
                 } else {
                     let chunks = StreamReassembler.followStream(packets: allPackets, selectedPacket: packet)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(chunks) { chunk in
-                                Text(chunk.text)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundColor(chunk.isClientToServer ? .red : .blue)
-                                    .padding(6)
-                                    .background(Color.secondary.opacity(0.06))
-                                    .cornerRadius(6)
-                            }
+                    if chunks.isEmpty {
+                        VStack(spacing: 12) {
+                            Spacer()
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .font(.system(size: 36))
+                                .foregroundColor(.secondary)
+                            Text("No Conversational Stream Available")
+                                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                .foregroundColor(.primary)
+                            Text("The selected packet (\(packet.protocolType.rawValue)) does not carry a bidirectional TCP/UDP conversation or stream payload.")
+                                .font(.system(size: 11, design: .monospaced))
+                                .multilineTextAlignment(.center)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 32)
+                            Spacer()
                         }
-                        .padding()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(chunks) { chunk in
+                                    Text(chunk.text)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundColor(chunk.isClientToServer ? .red : .blue)
+                                        .padding(6)
+                                        .background(Color.secondary.opacity(0.06))
+                                        .cornerRadius(6)
+                                }
+                            }
+                            .padding()
+                        }
                     }
                 }
 

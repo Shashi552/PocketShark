@@ -139,7 +139,15 @@ public final class AssetTopology: ObservableObject {
     }
 
     private func isUsableIP(_ ip: String) -> Bool {
-        return !ip.isEmpty && ip != "Unknown" && ip != "0.0.0.0" && ip != "255.255.255.255" && !ip.contains("BLE")
+        let clean = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean != "Unknown", clean != "0.0.0.0", clean != "255.255.255.255" else { return false }
+        let lower = clean.lowercased()
+        if lower.contains("broadcast") || lower.contains("ble") || lower.contains("radio") { return false }
+        if lower.hasPrefix("ff") { return false } // IPv6 Multicast
+        if let firstOctet = Int(clean.components(separatedBy: ".").first ?? ""), firstOctet >= 224 && firstOctet <= 239 {
+            return false // IPv4 Multicast group
+        }
+        return true
     }
 
     private func updateHost(

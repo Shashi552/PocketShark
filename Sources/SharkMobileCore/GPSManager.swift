@@ -89,7 +89,11 @@ public final class GPSManager: NSObject, ObservableObject {
 
     public func stampPacketLocation() -> GPSCoordinate {
         if let current = currentCoordinate {
-            // Apply micro-jitter for simulated tactical walk if moving
+            // If real location services are active and accurate, preserve true hardware telemetry
+            if isLocationActive && current.horizontalAccuracy > 0 && current.horizontalAccuracy < 100.0 {
+                return current
+            }
+            // Apply micro-jitter only for simulated tactical walk when hardware GPS is not active
             let jitterLat = (Double.random(in: -5...5) * 0.00001)
             let jitterLon = (Double.random(in: -5...5) * 0.00001)
             let stamped = GPSCoordinate(

@@ -186,7 +186,8 @@ public struct PcapManager {
 
             let rawPacket = data.subdata(in: offset..<offset + inclLen)
             let divisor = isNano ? 1_000_000_000.0 : 1_000_000.0
-            let timestamp = Double(tsSec) + (Double(tsUsec) / divisor)
+            let safeUsec = min(Double(tsUsec), divisor)
+            let timestamp = Double(tsSec) + (safeUsec / divisor)
             let record = PacketDissector.dissect(packetId: packetId, timestamp: timestamp, rawData: rawPacket)
             packets.append(record)
             packetId += 1
