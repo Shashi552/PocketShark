@@ -6,8 +6,9 @@ public final class CaptureEngine: ObservableObject {
     @Published public var capturedCount: Int = 0
     @Published public var droppedCount: Int = 0
     @Published public var memoryUsageMB: Double = 0.0
+    @Published public var selectedInterface: String = "All Interfaces"
+    @Published public var maxMemoryMB: Double = 100.0 // Configurable up to 500MB
 
-    private let maxPackets = 5000
     private var timer: Timer?
     private var packetCounter = 1
 
@@ -17,8 +18,7 @@ public final class CaptureEngine: ObservableObject {
         guard !isCapturing else { return }
         isCapturing = true
 
-        // Generate live packet stream reflecting local environment
-        timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.simulatePacketArrival()
         }
     }
@@ -51,28 +51,26 @@ public final class CaptureEngine: ObservableObject {
 
     private func simulatePacketArrival() {
         let now = Date().timeIntervalSince1970
-        let scenarios: [(Data)] = [
-            // HTTP Request to 192.168.63.64
-            createIPv4TCPPacket(srcIP: "172.18.235.201", dstIP: "192.168.63.64", srcPort: 52140, dstPort: 80, flags: 0x18, payload: "GET / HTTP/1.1\r\nHost: 192.168.63.64\r\nUser-Agent: SharkMobile/1.0 (iPhone; iOS 18)\r\n\r\n".data(using: .utf8)!),
-            // HTTP Response from 192.168.63.64 (Apache 2.4.41)
-            createIPv4TCPPacket(srcIP: "192.168.63.64", dstIP: "172.18.235.201", srcPort: 80, dstPort: 52140, flags: 0x18, payload: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\nContent-Type: text/html\r\n\r\n<html><title>GITAM CENTRAL SERVICES - NOC</title></html>".data(using: .utf8)!),
-            // DNS Query to Campus DNS
-            createIPv4UDPPacket(srcIP: "172.18.235.201", dstIP: "192.168.23.21", srcPort: 58921, dstPort: 53, domain: "testprojects2.gitam.edu"),
-            // TLS ClientHello with SNI gitam.edu
-            createTLSClientHelloPacket(srcIP: "172.18.235.201", dstIP: "192.168.64.65", sni: "security.gitam.edu")
-        ]
+        let (raw, iface) = generateDiversePacket()
 
-        let selectedData = scenarios[Int.random(in: 0..<scenarios.count)]
-        let record = PacketDissector.dissect(packetId: packetCounter, timestamp: now, rawData: selectedData)
+        // Filter by interface if not "All Interfaces"
+        if selectedInterface != "All Interfaces" && !iface.contains(selectedInterface.prefix(3)) {
+            return
+        }
+
+        let record = PacketDissector.dissect(packetId: packetCounter, timestamp: now, rawData: raw, interface: iface)
         packetCounter += 1
 
-        if packets.count >= maxPackets {
+        packets.append(record)
+        capturedCount += 1
+        updateMemoryMetrics()
+
+        // Evict oldest only if exceeding user-configured memory threshold
+        while memoryUsageMB > maxMemoryMB && !packets.isEmpty {
             packets.removeFirst()
             droppedCount += 1
+            updateMemoryMetrics()
         }
-        packets.append(record)
-        capturedCount = packets.count
-        updateMemoryMetrics()
     }
 
     private func updateMemoryMetrics() {
@@ -80,97 +78,145 @@ public final class CaptureEngine: ObservableObject {
         self.memoryUsageMB = Double(totalBytes) / (1024.0 * 1024.0)
     }
 
-    private func createIPv4TCPPacket(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, flags: UInt8, payload: Data) -> Data {
-        var d = Data(repeating: 0, count: 14) // Ethernet header dummy
-        d[12] = 0x08; d[13] = 0x00 // IPv4
-        var ip = Data([
-            0x45, 0x00, 0x00, 0x00, // IHL=5, Len
-            0x12, 0x34, 0x40, 0x00, // ID, Flags=DF
-            0x40, 0x06, 0x00, 0x00  // TTL=64, Proto=TCP, Csum
+    private func generateDiversePacket() -> (Data, String) {
+        let localIP = "192.168.1.\(Int.random(in: 101...150))"
+        let r = Int.random(in: 0..<11)
+        switch r {
+        case 0:
+            // HTTP Request to Cloudflare / Enterprise Web Server
+            let cloudflareIP = "104.21.48.91"
+            let payload = "GET /api/v1/status HTTP/1.1\r\nHost: api.cloudflare.com\r\nUser-Agent: SharkMobile/1.0 (iPhone; iOS 18)\r\nAccept: application/json\r\n\r\n".data(using: .utf8)!
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: cloudflareIP, srcPort: 51200 + Int.random(in: 1...1000), dstPort: 80, flags: 0x18, payload: payload), "en0 (Wi-Fi)")
+        case 1:
+            // TLS Client Hello with SNI to Cloudflare
+            return (createTLSClientHelloPacket(srcIP: localIP, dstIP: "1.1.1.1", sni: "cloudflare.com"), "en0 (Wi-Fi)")
+        case 2:
+            // TLS Client Hello with SNI to Apple iCloud Gateway
+            return (createTLSClientHelloPacket(srcIP: localIP, dstIP: "17.253.144.10", sni: "gateway.icloud.com"), "en0 (Wi-Fi)")
+        case 3:
+            // DNS Query to Cloudflare / Google DNS
+            let domains = ["apple.com", "gateway.icloud.com", "cloudflare.com", "google.com", "github.com", "openai.com", "aws.amazon.com", "api.telegram.org"]
+            let d = domains[Int.random(in: 0..<domains.count)]
+            let dnsServer = Bool.random() ? "1.1.1.1" : "8.8.8.8"
+            return (createIPv4UDPPacket(srcIP: localIP, dstIP: dnsServer, srcPort: 54321 + Int.random(in: 1...100), dstPort: 53, domain: d), "en0 (Wi-Fi)")
+        case 4:
+            // QUIC / HTTP3 UDP Transport to Google Cloud
+            let quicPayload = Data([0xC0, 0x00, 0x00, 0x01, 0x08, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
+            return (createIPv4UDPPacketWithPayload(srcIP: localIP, dstIP: "142.250.190.46", srcPort: 58210, dstPort: 443, payload: quicPayload), "en0 (Wi-Fi)")
+        case 5:
+            // Bluetooth Low Energy (AirPods Proximity Pairing Advertisement)
+            return (createBleFrame(mfgData: Data([0x4C, 0x00, 0x07, 0x19, 0x01, 0x02, 0x20])), "ble0 (BLE Radio)")
+        case 6:
+            // Bluetooth Low Energy (AirTag / FindMy Tracker Beacon)
+            return (createBleFrame(mfgData: Data([0x4C, 0x00, 0x12, 0x19, 0x10, 0xAA, 0xBB])), "ble0 (BLE Radio)")
+        case 7:
+            // ARP Request on LAN Gateway
+            return (createARPPacket(senderIP: "192.168.1.1", targetIP: localIP), "en0 (Wi-Fi)")
+        case 8:
+            // SSDP Multicast (UPnP Device Discovery)
+            let ssdpPayload = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n".data(using: .utf8)!
+            return (createIPv4UDPPacketWithPayload(srcIP: localIP, dstIP: "239.255.255.250", srcPort: 49200, dstPort: 1900, payload: ssdpPayload), "en0 (Wi-Fi)")
+        case 9:
+            // Loopback IPC Traffic (Local daemon / agent communications)
+            return (createIPv4TCPPacket(srcIP: "127.0.0.1", dstIP: "127.0.0.1", srcPort: 8990, dstPort: 58012, flags: 0x18, payload: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\",\"service\":\"sharkmobile-agent\"}".data(using: .utf8)!), "lo0 (Loopback)")
+        default:
+            // Cellular PDP traffic to Apple Push Notification Service (APNs) / CloudFront
+            let cellularIP = "10.142.\(Int.random(in: 10...90)).\(Int.random(in: 1...254))"
+            return (createIPv4TCPPacket(srcIP: cellularIP, dstIP: "17.253.144.10", srcPort: 59124, dstPort: 443, flags: 0x10, payload: Data(repeating: 0x17, count: 64)), "pdp_ip0 (Cellular)")
+        }
+    }
+
+    private func createBleFrame(mfgData: Data) -> Data {
+        var d = Data([0x42, 0x4C, 0x45]) // Magic "BLE"
+        d.append(UInt8(bitPattern: Int8(-55))) // RSSI
+        d.append(mfgData)
+        return d
+    }
+
+    private func createARPPacket(senderIP: String, targetIP: String) -> Data {
+        var d = Data(repeating: 0, count: 14)
+        d[12] = 0x08; d[13] = 0x06 // ARP
+        var arp = Data([
+            0x00, 0x01, // HW Ethernet
+            0x08, 0x00, // Proto IPv4
+            0x06, 0x04, // HW Size 6, Proto Size 4
+            0x00, 0x01  // Request
         ])
+        arp.append(contentsOf: [0x6C, 0x03, 0xB5, 0x64, 0x39, 0x5E]) // Cisco MAC
+        arp.append(contentsOf: parseIPv4Bytes(senderIP))
+        arp.append(contentsOf: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) // Target MAC
+        arp.append(contentsOf: parseIPv4Bytes(targetIP))
+        d.append(arp)
+        return d
+    }
+
+    private func createIPv4TCPPacket(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, flags: UInt8, payload: Data) -> Data {
+        var d = Data(repeating: 0, count: 14)
+        d[12] = 0x08; d[13] = 0x00
+        var ip = Data([0x45, 0x00, 0x00, 0x00, 0x12, 0x34, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00])
         ip.append(contentsOf: parseIPv4Bytes(srcIP))
         ip.append(contentsOf: parseIPv4Bytes(dstIP))
 
         var tcp = Data([
             UInt8(srcPort >> 8), UInt8(srcPort & 0xFF),
             UInt8(dstPort >> 8), UInt8(dstPort & 0xFF),
-            0x00, 0x00, 0x10, 0x01, // Seq
-            0x00, 0x00, 0x20, 0x02, // Ack
-            0x50, flags, 0x72, 0x10, // DataOffset=5 (20B), Flags, Window
-            0x00, 0x00, 0x00, 0x00  // Csum, Urg
+            0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x20, 0x02,
+            0x50, flags, 0x72, 0x10, 0x00, 0x00, 0x00, 0x00
         ])
         tcp.append(payload)
 
         let totalLen = UInt16(ip.count + tcp.count)
-        ip[2] = UInt8(totalLen >> 8)
-        ip[3] = UInt8(totalLen & 0xFF)
-
+        ip[2] = UInt8(totalLen >> 8); ip[3] = UInt8(totalLen & 0xFF)
         d.append(ip)
         d.append(tcp)
         return d
     }
 
     private func createIPv4UDPPacket(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, domain: String) -> Data {
+        var dns = Data([0xA1, 0xB2, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        for part in domain.components(separatedBy: ".") {
+            dns.append(UInt8(part.count))
+            dns.append(part.data(using: .utf8)!)
+        }
+        dns.append(contentsOf: [0x00, 0x00, 0x01, 0x00, 0x01])
+        return createIPv4UDPPacketWithPayload(srcIP: srcIP, dstIP: dstIP, srcPort: srcPort, dstPort: dstPort, payload: dns)
+    }
+
+    private func createIPv4UDPPacketWithPayload(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, payload: Data) -> Data {
         var d = Data(repeating: 0, count: 14)
         d[12] = 0x08; d[13] = 0x00
         var ip = Data([0x45, 0x00, 0x00, 0x00, 0x56, 0x78, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00])
         ip.append(contentsOf: parseIPv4Bytes(srcIP))
         ip.append(contentsOf: parseIPv4Bytes(dstIP))
 
-        var dns = Data([
-            0xA1, 0xB2, // Tx ID
-            0x01, 0x00, // Standard query
-            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // Q=1, A=0
-        ])
-        for part in domain.components(separatedBy: ".") {
-            dns.append(UInt8(part.count))
-            dns.append(part.data(using: .utf8)!)
-        }
-        dns.append(contentsOf: [0x00, 0x00, 0x01, 0x00, 0x01]) // Type A, Class IN
-
-        let udpLen = UInt16(8 + dns.count)
+        let udpLen = UInt16(8 + payload.count)
         var udp = Data([
             UInt8(srcPort >> 8), UInt8(srcPort & 0xFF),
             UInt8(dstPort >> 8), UInt8(dstPort & 0xFF),
             UInt8(udpLen >> 8), UInt8(udpLen & 0xFF),
             0x00, 0x00
         ])
-        udp.append(dns)
+        udp.append(payload)
 
         let totalLen = UInt16(ip.count + udp.count)
-        ip[2] = UInt8(totalLen >> 8)
-        ip[3] = UInt8(totalLen & 0xFF)
-
+        ip[2] = UInt8(totalLen >> 8); ip[3] = UInt8(totalLen & 0xFF)
         d.append(ip)
         d.append(udp)
         return d
     }
 
     private func createTLSClientHelloPacket(srcIP: String, dstIP: String, sni: String) -> Data {
-        var tlsPayload = Data([
-            0x16, 0x03, 0x01, 0x00, 0x00, // ContentType=Handshake(22), TLS 1.0
-            0x01, 0x00, 0x00, 0x00,       // HandshakeType=ClientHello(1)
-            0x03, 0x03                    // ClientVersion=TLS 1.2
-        ])
-        tlsPayload.append(contentsOf: Data(repeating: 0x42, count: 32)) // Random
-        tlsPayload.append(0x00) // Session ID Len
-        tlsPayload.append(contentsOf: [0x00, 0x02, 0x13, 0x01]) // Cipher Suites (TLS_AES_128_GCM_SHA256)
-        tlsPayload.append(contentsOf: [0x01, 0x00]) // Compression
+        var tlsPayload = Data([0x16, 0x03, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x03])
+        tlsPayload.append(contentsOf: Data(repeating: 0x42, count: 32))
+        tlsPayload.append(0x00)
+        tlsPayload.append(contentsOf: [0x00, 0x02, 0x13, 0x01, 0x01, 0x00])
 
-        // Extension: server_name (0x0000)
         let sniBytes = sni.data(using: .utf8)!
-        var extSni = Data([
-            0x00, 0x00, // Type server_name
-            0x00, UInt8(sniBytes.count + 5), // Ext length
-            0x00, UInt8(sniBytes.count + 3), // ServerNameList length
-            0x00, // NameType=host_name(0)
-            0x00, UInt8(sniBytes.count)
-        ])
+        var extSni = Data([0x00, 0x00, 0x00, UInt8(sniBytes.count + 5), 0x00, UInt8(sniBytes.count + 3), 0x00, 0x00, UInt8(sniBytes.count)])
         extSni.append(sniBytes)
 
         var extensions = Data([0x00, UInt8(extSni.count)])
         extensions.append(extSni)
-
         tlsPayload.append(extensions)
 
         let hsLen = UInt32(tlsPayload.count - 5)

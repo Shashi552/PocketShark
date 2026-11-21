@@ -25,8 +25,8 @@ for p in engine.packets.prefix(3) {
 }
 
 // Test Display Filter
-print("\n🔍 Testing Display Filter: 'ip.addr == 192.168.63.64'")
-let filtered = engine.packets.filter { DisplayFilter.evaluate(filter: "ip.addr == 192.168.63.64", packet: $0) }
+print("\n🔍 Testing Display Filter: 'ip.addr == 1.1.1.1'")
+let filtered = engine.packets.filter { DisplayFilter.evaluate(filter: "ip.addr == 1.1.1.1", packet: $0) }
 print("✅ Filtered matches: \(filtered.count) packets")
 
 // Test PCAP Export & Import

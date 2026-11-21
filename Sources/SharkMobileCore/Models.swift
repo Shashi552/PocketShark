@@ -11,6 +11,11 @@ public enum ProtocolType: String, Codable, CaseIterable {
     case dns = "DNS"
     case tls = "TLS"
     case http = "HTTP"
+    case quic = "QUIC"
+    case dhcp = "DHCP"
+    case ssdp = "SSDP"
+    case ssh = "SSH"
+    case ble = "BLE"
     case unknown = "DATA"
 
     public var colorHex: String {
@@ -22,6 +27,11 @@ public enum ProtocolType: String, Codable, CaseIterable {
         case .tls: return "#D0C9FF"      // Wireshark dark purple
         case .icmp: return "#E8E8E8"     // Wireshark gray
         case .arp: return "#FAF0D7"      // Wireshark cream
+        case .quic: return "#FCE4D6"     // Wireshark peach
+        case .dhcp: return "#E2EFDA"     // Wireshark mint
+        case .ssdp: return "#FFF2CC"     // Wireshark pale yellow
+        case .ssh: return "#D9E1F2"      // Wireshark steel blue
+        case .ble: return "#DDEBF7"      // Wireshark wireless blue
         default: return "#FFFFFF"
         }
     }
@@ -66,6 +76,7 @@ public struct PacketRecord: Identifiable, Hashable {
     public let info: String
     public let rawData: Data
     public let layers: [DissectedLayer]
+    public let interface: String
 
     public init(
         id: Int,
@@ -76,7 +87,8 @@ public struct PacketRecord: Identifiable, Hashable {
         length: Int,
         info: String,
         rawData: Data,
-        layers: [DissectedLayer]
+        layers: [DissectedLayer],
+        interface: String = "en0 (Wi-Fi)"
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -90,5 +102,6 @@ public struct PacketRecord: Identifiable, Hashable {
         self.info = info
         self.rawData = rawData
         self.layers = layers
+        self.interface = interface
     }
 }
