@@ -2,12 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "SharkMobile",
+    name: "PocketShark",
     platforms: [
         .iOS(.v15),
         .macOS(.v12)
     ],
     products: [
+        .library(name: "PocketSharkCore", targets: ["SharkMobileCore"]),
+        .executable(name: "PocketSharkCLI", targets: ["SharkMobileCLI"]),
         .library(name: "SharkMobileCore", targets: ["SharkMobileCore"]),
         .executable(name: "SharkMobileCLI", targets: ["SharkMobileCLI"])
     ],
