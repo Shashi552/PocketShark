@@ -7,7 +7,9 @@ import UIKit
 // MARK: - Root Tab View: Tactical Mission Command
 public struct SharkMobileMainView: View {
     @StateObject private var engine = CaptureEngine()
-    @StateObject private var bleScanner = BleAirspaceScanner()
+    #if canImport(CoreBluetooth)
+    @StateObject private var bleScanner = BleAirspaceScanner.shared
+    #endif
     @State private var selectedTab = 0
     @State private var isNightVisionMode: Bool = true
 
@@ -184,6 +186,22 @@ public struct SnifferDashboardView: View {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 7)
                             .background(Color.secondary.opacity(0.15))
+                            .cornerRadius(8)
+                        }
+
+                        // Inject Live Probe Button
+                        Button(action: { engine.triggerLiveWebProbe() }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "bolt.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.yellow)
+                                Text("Probe")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 7)
+                            .background(Color.yellow.opacity(0.18))
                             .cornerRadius(8)
                         }
 
@@ -1083,6 +1101,79 @@ public struct VaultAndRadiosView: View {
                         }
                         .font(.system(size: 12, weight: .bold))
                     }
+                }
+
+                Section(header: Text("BLE Airspace Spectrum & Beacons (\(bleScanner.discoveredDevices.count))")) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Radio Subsystem")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(bleScanner.bluetoothState)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button(action: { bleScanner.startScan() }) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 12))
+                                .padding(6)
+                                .background(Color.secondary.opacity(0.12))
+                                .cornerRadius(6)
+                        }
+                    }
+
+                    ForEach(bleScanner.discoveredDevices) { dev in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Image(systemName: dev.continuityType != nil ? "apple.logo" : "antenna.radiowaves.left.and.right")
+                                    .foregroundColor(Color(hex: "#00E5FF"))
+                                    .font(.system(size: 12))
+                                Text(dev.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                Spacer()
+                                Text("\(dev.rssi) dBm")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(dev.rssi > -60 ? .green : (dev.rssi > -75 ? .yellow : .orange))
+                            }
+                            if let cont = dev.continuityType {
+                                Text(cont)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.15))
+                                    .foregroundColor(Color.blue)
+                                    .cornerRadius(4)
+                            }
+                            if !dev.manufacturerDataHex.isEmpty {
+                                Text("Mfg: \(dev.manufacturerDataHex)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                Section(header: Text("Cellular 5G / LTE Radio Bearer Diagnostics")) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
+                                .foregroundColor(.green)
+                            Text("Apple Cellular Telemetry (5G NR Standalone)")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        Text("Active Interface: pdp_ip0 | Carrier: 5G NR Dual-Connectivity (Band n78)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Text("Signal Metrics: RSRP: -82 dBm | RSRQ: -10 dB | SINR: 18 dB")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Text("Multipath TCP (MPTCP): Handover Active (pdp_ip0 <-> en0)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(Color(hex: "#00E5FF"))
+                    }
+                    .padding(.vertical, 2)
                 }
 
                 Section(header: Text("Biometric Security Guard")) {

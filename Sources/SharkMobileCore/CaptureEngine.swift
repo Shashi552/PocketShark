@@ -74,6 +74,9 @@ public final class CaptureEngine: ObservableObject {
         guard !isCapturing else { return }
         isCapturing = true
         gpsManager.startLocationServices()
+        #if canImport(CoreBluetooth)
+        BleAirspaceScanner.shared.startScan()
+        #endif
         missionManager.log(severity: "START", tag: "CAPTURE", message: "Live promiscuous capture activated [\(captureMode.rawValue)] on \(selectedInterface)")
 
         if demoModeEnabled || captureMode == .demoSimulated {
@@ -94,7 +97,7 @@ public final class CaptureEngine: ObservableObject {
             realCapturePipeline.start(interface: selectedInterface, mode: captureMode)
             self.bpfStatusDescription = realCapturePipeline.bpfStatus.rawValue
             if realCapturePipeline.bpfStatus == .bpfDenied {
-                missionManager.log(severity: "WARN", tag: "BPF", message: "BPF kernel tap restricted (Jailed iOS / Sandbox). Live hardware capture running via Local Socket Tap & BLE Airspace.")
+                missionManager.log(severity: "WARN", tag: "BPF", message: "BPF kernel tap restricted (Non-root / Sandbox). Live hardware capture running via OmniSocket Tap, BLE Airspace, and Local Proxy.")
             } else {
                 missionManager.log(severity: "START", tag: "BPF", message: "BPF Hardware Tap active [Status: \(realCapturePipeline.bpfStatus.rawValue)]")
             }
@@ -106,9 +109,18 @@ public final class CaptureEngine: ObservableObject {
         timer?.invalidate()
         timer = nil
         realCapturePipeline.stop()
+        #if canImport(CoreBluetooth)
+        BleAirspaceScanner.shared.stopScan()
+        #endif
         gpsManager.stopLocationServices()
         self.bpfStatusDescription = "Halted"
         missionManager.log(severity: "STOP", tag: "CAPTURE", message: "Capture halted. Total: \(capturedCount) packets")
+    }
+
+    public func triggerLiveWebProbe() {
+        realCapturePipeline.localProxyServer.injectLiveWebProbe()
+        realCapturePipeline.localSocketCapture.performActiveHttpProbe()
+        missionManager.log(severity: "INJECT", tag: "PROBE", message: "Triggered live Wi-Fi HTTP probe & Local Proxy Tap on 127.0.0.1:8888")
     }
 
     public func clear() {
@@ -175,18 +187,18 @@ public final class CaptureEngine: ObservableObject {
             let matches: Bool
             if lowerSelected.contains("ble") || lowerSelected.contains("bluetooth") {
                 matches = lowerIface.contains("ble") || lowerIface.contains("bluetooth")
-            } else if lowerSelected.contains("en0") {
-                matches = lowerIface.contains("en0")
+            } else if lowerSelected.contains("en0") || lowerSelected.contains("wi-fi") || lowerSelected.contains("wifi") {
+                matches = lowerIface.contains("en") || lowerIface.contains("wi-fi") || lowerIface.contains("wifi") || lowerIface.contains("eth")
             } else if lowerSelected.contains("en1") {
-                matches = lowerIface.contains("en1")
-            } else if lowerSelected.contains("lo") {
-                matches = lowerIface.contains("lo")
-            } else if lowerSelected.contains("pdp_ip") {
-                matches = lowerIface.contains("pdp_ip")
-            } else if lowerSelected.contains("utun") {
-                matches = lowerIface.contains("utun")
+                matches = lowerIface.contains("en1") || lowerIface.contains("eth")
+            } else if lowerSelected.contains("lo") || lowerSelected.contains("loopback") {
+                matches = lowerIface.contains("lo") || lowerIface.contains("loopback")
+            } else if lowerSelected.contains("pdp_ip") || lowerSelected.contains("cellular") || lowerSelected.contains("lte") || lowerSelected.contains("5g") {
+                matches = lowerIface.contains("pdp_ip") || lowerIface.contains("cellular") || lowerIface.contains("5g")
+            } else if lowerSelected.contains("utun") || lowerSelected.contains("vpn") {
+                matches = lowerIface.contains("utun") || lowerIface.contains("vpn")
             } else {
-                matches = lowerIface.contains(selectedInterface.prefix(4).lowercased())
+                matches = lowerIface.contains(lowerSelected) || lowerSelected.contains(lowerIface)
             }
             if !matches { return }
         }

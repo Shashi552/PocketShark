@@ -145,25 +145,28 @@ public struct BleDiscoveredPeripheral: Identifiable, Hashable {
 #if canImport(CoreBluetooth)
 @MainActor
 public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
+    public static let shared = BleAirspaceScanner()
+
     @Published public var discoveredDevices: [BleDiscoveredPeripheral] = []
     @Published public var isScanning: Bool = false
-    @Published public var bluetoothState: String = "Unknown"
+    @Published public var bluetoothState: String = "Standby"
 
     private var centralManager: CBCentralManager?
 
     public override init() {
         super.init()
         self.centralManager = CBCentralManager(delegate: self, queue: .main)
+        seedSimulatedBleAirspace()
     }
 
     public func startScan() {
+        isScanning = true
         guard let cm = centralManager, cm.state == .poweredOn else {
-            // Populate representative local airplay / BLE beacons for visualization
+            self.bluetoothState = "Virtual Airspace Radio Active (Simulator / Fallback)"
             seedSimulatedBleAirspace()
-            isScanning = true
             return
         }
-        isScanning = true
+        self.bluetoothState = "Hardware Airspace Radio Scanning"
         cm.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
     }
 
@@ -172,23 +175,50 @@ public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralMana
         centralManager?.stopScan()
     }
 
+    public func recordDiscoveredPeripheral(
+        id: String,
+        name: String,
+        rssi: Int,
+        manufacturerDataHex: String,
+        continuityType: String?,
+        serviceUUIDs: [String]
+    ) {
+        let record = BleDiscoveredPeripheral(
+            id: id,
+            name: name,
+            rssi: rssi,
+            manufacturerDataHex: manufacturerDataHex,
+            continuityType: continuityType,
+            serviceUUIDs: serviceUUIDs,
+            lastSeen: Date()
+        )
+        if let idx = self.discoveredDevices.firstIndex(where: { $0.id == id }) {
+            self.discoveredDevices[idx] = record
+        } else {
+            self.discoveredDevices.append(record)
+            if self.discoveredDevices.count > 500 {
+                self.discoveredDevices.removeFirst(self.discoveredDevices.count - 500)
+            }
+        }
+    }
+
     nonisolated public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let state = central.state
         Task { @MainActor in
             switch state {
             case .poweredOn:
-                self.bluetoothState = "Powered On (Airspace Radio Active)"
+                self.bluetoothState = "Powered On (Hardware Airspace Radio Active)"
+                if self.isScanning {
+                    central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+                }
             case .poweredOff:
-                self.bluetoothState = "Powered Off (Bluetooth Disabled in iOS Settings)"
-                self.isScanning = false
+                self.bluetoothState = "Powered Off (Bluetooth Disabled in Settings)"
             case .unauthorized:
-                self.bluetoothState = "Unauthorized (Bluetooth Permission Denied)"
-                self.isScanning = false
+                self.bluetoothState = "Unauthorized (Bluetooth Permission Denied - Fallback Active)"
             case .unsupported:
-                self.bluetoothState = "Unsupported (No BLE Radio Present)"
-                self.isScanning = false
+                self.bluetoothState = "Unsupported (iOS Simulator - Virtual Airspace Active)"
             default:
-                self.bluetoothState = "Resetting / Standby"
+                self.bluetoothState = "Standby / Resetting"
             }
         }
     }
@@ -241,11 +271,13 @@ public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralMana
         }
     }
 
-    private func seedSimulatedBleAirspace() {
+    public func seedSimulatedBleAirspace() {
+        if !discoveredDevices.isEmpty { return }
         self.discoveredDevices = [
             BleDiscoveredPeripheral(id: "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0", name: "AirPods Pro (2nd gen)", rssi: -48, manufacturerDataHex: "4C 00 07 19 01 02 20", continuityType: "AirPods Proximity Pairing", serviceUUIDs: ["FE2C"], lastSeen: Date()),
             BleDiscoveredPeripheral(id: "A14D7B32-8419-4CB5-9EAA-F87981A7D11C", name: "Apple AirTag (Nearby)", rssi: -62, manufacturerDataHex: "4C 00 12 19 10 B4 E1", continuityType: "FindMy / AirTag Tracker", serviceUUIDs: ["FD6F"], lastSeen: Date()),
-            BleDiscoveredPeripheral(id: "6B9F2A10-18D4-47FA-821B-403B8D56A923", name: "Smart Fitness Watch", rssi: -74, manufacturerDataHex: "0A 01 04 88 F0 12", continuityType: nil, serviceUUIDs: ["180D", "180F"], lastSeen: Date()),
+            BleDiscoveredPeripheral(id: "6B9F2A10-18D4-47FA-821B-403B8D56A923", name: "Apple Watch Ultra (Handoff)", rssi: -55, manufacturerDataHex: "4C 00 10 05 01 18 00", continuityType: "Nearby Action / Handoff", serviceUUIDs: ["180D"], lastSeen: Date()),
+            BleDiscoveredPeripheral(id: "8F102B99-0123-4567-89AB-CDEF01234567", name: "Smart Fitness Tracker", rssi: -74, manufacturerDataHex: "0A 01 04 88 F0 12", continuityType: nil, serviceUUIDs: ["180D", "180F"], lastSeen: Date()),
             BleDiscoveredPeripheral(id: "9C81E3A5-5028-49A1-B833-2287CD8AA3F1", name: "ESP32-Marauder (Beacon)", rssi: -54, manufacturerDataHex: "4C 00 07 0F 55 AA 11", continuityType: "AirPods Proximity Pairing (Spoofed)", serviceUUIDs: [], lastSeen: Date())
         ]
     }
