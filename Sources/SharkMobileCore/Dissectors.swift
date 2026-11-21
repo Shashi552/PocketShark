@@ -669,9 +669,19 @@ public struct PacketDissector {
 
     private static func isWebSocketFrame(payload: Data) -> Bool {
         guard payload.count >= 2 else { return false }
+        // Exclude HTTP text headers (GET, POST, PUT, DELETE, HTTP/1.x, HEAD, OPTIONS)
+        let prefix4 = String(decoding: payload.prefix(5), as: UTF8.self).uppercased()
+        if prefix4.hasPrefix("GET ") || prefix4.hasPrefix("POST") || prefix4.hasPrefix("PUT ") ||
+           prefix4.hasPrefix("DELE") || prefix4.hasPrefix("HTTP") || prefix4.hasPrefix("HEAD") {
+            return false
+        }
+        // RFC 6455: Reserved bits (bits 4, 5, 6) MUST be 0 unless an extension is negotiated
+        if (payload[0] & 0x70) != 0 {
+            return false
+        }
         let opcode = payload[0] & 0x0F
-        // Valid opcodes: 0x0 (cont), 0x1 (text), 0x2 (binary), 0x8 (close), 0x9 (ping), 0xA (pong)
-        return (opcode <= 0x02 || (opcode >= 0x08 && opcode <= 0x0A))
+        // Valid opcodes: 0x1 (text), 0x2 (binary), 0x8 (close), 0x9 (ping), 0xA (pong)
+        return (opcode == 0x01 || opcode == 0x02 || opcode == 0x08 || opcode == 0x09 || opcode == 0x0A)
     }
 
     private static func formatMAC(_ data: Data) -> String {

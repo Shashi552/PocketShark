@@ -4,5 +4,8 @@
 *.dia
 *.swp
 *.ipa
+*.pcap
+*.pcapng
+SharkMobileCLI
 build/
 .build/

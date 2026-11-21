@@ -63,6 +63,20 @@ jobs:
               <array>
                   <string>arm64</string>
               </array>
+              <key>NSBluetoothAlwaysUsageDescription</key>
+              <string>SharkMobile requires Bluetooth access to monitor live over-the-air BLE airspace packets and detect proximity beacons.</string>
+              <key>NSBluetoothPeripheralUsageDescription</key>
+              <string>SharkMobile requires Bluetooth access to analyze airspace beacons and peripheral frames.</string>
+              <key>NSLocationWhenInUseUsageDescription</key>
+              <string>SharkMobile requires location access to georeference network packet captures and plot tactical wardriving telemetry.</string>
+              <key>NSFaceIDUsageDescription</key>
+              <string>SharkMobile requires Face ID / Touch ID to authenticate secure access to the PCAP vault and classified case files.</string>
+              <key>NSLocalNetworkUsageDescription</key>
+              <string>SharkMobile requires local network access to discover active interfaces, capture multicast mDNS/SSDP datagrams, and inspect LAN devices.</string>
+              <key>UIFileSharingEnabled</key>
+              <true/>
+              <key>LSSupportsOpeningDocumentsInPlace</key>
+              <true/>
           </dict>
           </plist>
           EOF

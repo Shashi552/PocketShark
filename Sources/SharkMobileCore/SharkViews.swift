@@ -273,11 +273,19 @@ public struct SnifferDashboardView: View {
 
                 // Real-Time Bottom Telemetry Bar
                 HStack {
-                    Text("Packets: \(engine.capturedCount)  |  Shown: \(filteredPackets.count)  |  Threats: \(engine.threats.count)")
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(engine.isCapturing ? Color.green : Color.gray)
+                            .frame(width: 6, height: 6)
+                        Text(engine.isCapturing ? engine.captureSourceMode.rawValue : "Idle")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundColor(engine.isCapturing ? Color.green : .secondary)
+                    }
+                    Text("• Pkts: \(engine.capturedCount) | Shown: \(filteredPackets.count)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text("RAM: \(String(format: "%.2f", engine.memoryUsageMB)) MB / \(Int(engine.maxMemoryMB)) MB")
+                    Text("RAM: \(String(format: "%.2f", engine.memoryUsageMB)) MB")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundColor(engine.memoryUsageMB > (engine.maxMemoryMB * 0.8) ? .red : .secondary)
                 }
@@ -950,6 +958,35 @@ public struct VaultAndRadiosView: View {
                         }
                     }
                     .padding(.vertical, 2)
+                }
+
+                Section(header: Text("Capture Pipeline Engine")) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Active Engine")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(engine.captureSourceMode.rawValue)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Circle()
+                            .fill(engine.isCapturing ? Color.green : Color.gray)
+                            .frame(width: 10, height: 10)
+                    }
+
+                    Toggle("Demo / Simulation Mode", isOn: $engine.demoModeEnabled)
+                        .font(.system(size: 13))
+
+                    if engine.demoModeEnabled {
+                        Text("Simulates synthetic multi-protocol packets for offline UI testing.")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange)
+                    } else {
+                        Text("Captures genuine network frames via Darwin BPF (/dev/bpf) on root/TrollStore, or local mDNS/SSDP socket taps on jailed iOS.")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section(header: Text("PCAP-NG Vault & Sharing")) {

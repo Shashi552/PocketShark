@@ -15,11 +15,11 @@ func runMissionDiagnostics() {
     print("📍 GPS Hardware Subsystem: \(engine.gpsManager.locationStatusString)")
     print("🔐 Biometric Privacy Guard: Available (\(engine.biometricGuard.biometricTypeString))")
 
-    print("\n[PHASE 2] Starting Live Promiscuous Tactical Capture...")
+    print("\n[PHASE 2] Starting Live Promiscuous Tactical Capture & Protocol Simulation...")
     engine.startCapture()
 
-    // Run simulation for 2.5 seconds to capture a diverse packet set
-    RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+    // Step simulation across 32 iterations to exercise every single protocol, secret detector, and IDS vector
+    engine.stepSimulation(count: 32)
     engine.stopCapture()
 
     print("✅ Captured \(engine.packets.count) packets successfully.")
@@ -47,6 +47,8 @@ func runMissionDiagnostics() {
             print("   🔹 [DHCP] Packet #\(p.id): \(p.info)")
         } else if p.protocolType == .websocket {
             print("   🔹 [WebSocket] Packet #\(p.id): \(p.info)")
+        } else if p.protocolType == .http {
+            print("   🔹 [HTTP] Packet #\(p.id): \(p.info)")
         }
     }
 

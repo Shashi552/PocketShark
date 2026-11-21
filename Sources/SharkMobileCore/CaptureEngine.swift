@@ -16,6 +16,15 @@ public final class CaptureEngine: ObservableObject {
     @Published public var threats: [ThreatEvent] = []
     @Published public var securityFindings: [SecurityFinding] = []
     @Published public var discoveredAssets: [DiscoveredHost] = []
+    @Published public var captureMode: CaptureSourceMode = .liveHardware
+    @Published public var demoModeEnabled: Bool = false
+    @Published public var bpfStatusDescription: String = "Standby"
+    public let realCapturePipeline = RealCapturePipeline()
+
+    public var captureSourceMode: CaptureSourceMode {
+        get { captureMode }
+        set { captureMode = newValue }
+    }
 
     // Tactical Systems Sub-Engines
     public let threatDetector = ThreatDetector()
@@ -31,6 +40,11 @@ public final class CaptureEngine: ObservableObject {
     private var scanPortCounter = 20
 
     public init() {
+        realCapturePipeline.packetHandler = { [weak self] rawData, iface in
+            DispatchQueue.main.async {
+                self?.ingestPacket(rawData: rawData, interface: iface)
+            }
+        }
         #if canImport(UIKit)
         NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
@@ -60,12 +74,29 @@ public final class CaptureEngine: ObservableObject {
         guard !isCapturing else { return }
         isCapturing = true
         gpsManager.startLocationServices()
-        missionManager.log(severity: "START", tag: "CAPTURE", message: "Live promiscuous capture activated on \(selectedInterface)")
+        missionManager.log(severity: "START", tag: "CAPTURE", message: "Live promiscuous capture activated [\(captureMode.rawValue)] on \(selectedInterface)")
 
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            guard let strongSelf = self else { return }
-            DispatchQueue.main.async {
-                strongSelf.simulatePacketArrival()
+        if demoModeEnabled || captureMode == .demoSimulated {
+            missionManager.log(severity: "START", tag: "SIMULATION", message: "Demo simulated packet generator activated on \(selectedInterface)")
+            timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                guard let strongSelf = self else { return }
+                DispatchQueue.main.async {
+                    strongSelf.simulatePacketArrival()
+                }
+            }
+        } else {
+            realCapturePipeline.packetHandler = { [weak self] rawData, iface in
+                guard let strongSelf = self else { return }
+                DispatchQueue.main.async {
+                    strongSelf.ingestPacket(rawData: rawData, interface: iface)
+                }
+            }
+            realCapturePipeline.start(interface: selectedInterface, mode: captureMode)
+            self.bpfStatusDescription = realCapturePipeline.bpfStatus.rawValue
+            if realCapturePipeline.bpfStatus == .bpfDenied {
+                missionManager.log(severity: "WARN", tag: "BPF", message: "BPF kernel tap restricted (Jailed iOS / Sandbox). Live hardware capture running via Local Socket Tap & BLE Airspace.")
+            } else {
+                missionManager.log(severity: "START", tag: "BPF", message: "BPF Hardware Tap active [Status: \(realCapturePipeline.bpfStatus.rawValue)]")
             }
         }
     }
@@ -74,8 +105,10 @@ public final class CaptureEngine: ObservableObject {
         isCapturing = false
         timer?.invalidate()
         timer = nil
+        realCapturePipeline.stop()
         gpsManager.stopLocationServices()
-        missionManager.log(severity: "STOP", tag: "CAPTURE", message: "Promiscuous capture halted. Total: \(capturedCount) packets")
+        self.bpfStatusDescription = "Halted"
+        missionManager.log(severity: "STOP", tag: "CAPTURE", message: "Capture halted. Total: \(capturedCount) packets")
     }
 
     public func clear() {
@@ -130,16 +163,19 @@ public final class CaptureEngine: ObservableObject {
     }
 
     public func simulatePacketArrival() {
-        let now = Date().timeIntervalSince1970
         let (raw, iface) = generateDiversePacket()
+        ingestPacket(rawData: raw, interface: iface)
+    }
 
+    public func ingestPacket(rawData: Data, interface: String) {
         // Filter by interface if not "All Interfaces"
-        if selectedInterface != "All Interfaces" && !iface.contains(selectedInterface.prefix(3)) {
+        if selectedInterface != "All Interfaces" && !interface.contains(selectedInterface.prefix(3)) {
             return
         }
 
+        let now = Date().timeIntervalSince1970
         let loc = gpsManager.stampPacketLocation()
-        let recordRaw = PacketDissector.dissect(packetId: packetCounter, timestamp: now, rawData: raw, interface: iface)
+        let recordRaw = PacketDissector.dissect(packetId: packetCounter, timestamp: now, rawData: rawData, interface: interface)
         let record = PacketRecord(
             id: recordRaw.id,
             timestamp: recordRaw.timestamp,
@@ -221,19 +257,30 @@ public final class CaptureEngine: ObservableObject {
         }
     }
 
+    public func stepSimulation(count: Int = 1) {
+        for _ in 0..<count {
+            simulatePacketArrival()
+        }
+    }
+
     private func updateMemoryMetrics() {
         self.memoryUsageMB = Double(max(0, currentTotalRawBytes)) / (1024.0 * 1024.0)
     }
 
+    private var packetCycleIndex: Int = 0
+
     private func generateDiversePacket() -> (Data, String) {
-        let localIP = "192.168.1.\(Int.random(in: 101...150))"
-        let r = Int.random(in: 0..<16)
+        let cycle = packetCycleIndex
+        packetCycleIndex += 1
+        let r = cycle % 16
+        let localIP = "192.168.1.\(101 + (cycle % 20))"
+
         switch r {
         case 0:
-            // HTTP Request to Cloudflare
+            // HTTP Request to Cloudflare (with Apple MAC)
             let cloudflareIP = "104.21.48.91"
             let payload = Data("GET /api/v1/status HTTP/1.1\r\nHost: api.cloudflare.com\r\nUser-Agent: SharkMobile/2.0 (iPhone; iOS 18)\r\nAccept: application/json\r\n\r\n".utf8)
-            return (createIPv4TCPPacket(srcIP: localIP, dstIP: cloudflareIP, srcPort: 51200 + Int.random(in: 1...1000), dstPort: 80, flags: 0x18, payload: payload), "en0 (Wi-Fi)")
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: cloudflareIP, srcPort: 51200 + (cycle % 1000), dstPort: 80, flags: 0x18, payload: payload, srcMAC: [0xAC, 0xDE, 0x48, 0x11, 0x22, 0x33]), "en0 (Wi-Fi)")
         case 1:
             // TLS Client Hello to Cloudflare
             return (createTLSClientHelloPacket(srcIP: localIP, dstIP: "1.1.1.1", sni: "cloudflare.com"), "en0 (Wi-Fi)")
@@ -243,9 +290,9 @@ public final class CaptureEngine: ObservableObject {
         case 3:
             // DNS Query to Google DNS / Cloudflare
             let domains = ["apple.com", "gateway.icloud.com", "cloudflare.com", "google.com", "github.com", "openai.com", "aws.amazon.com"]
-            let d = domains[Int.random(in: 0..<domains.count)]
-            let dnsServer = Bool.random() ? "1.1.1.1" : "8.8.8.8"
-            return (createIPv4UDPPacket(srcIP: localIP, dstIP: dnsServer, srcPort: 54321 + Int.random(in: 1...100), dstPort: 53, domain: d), "en0 (Wi-Fi)")
+            let d = domains[cycle % domains.count]
+            let dnsServer = (cycle % 2 == 0) ? "1.1.1.1" : "8.8.8.8"
+            return (createIPv4UDPPacket(srcIP: localIP, dstIP: dnsServer, srcPort: 54321 + (cycle % 100), dstPort: 53, domain: d), "en0 (Wi-Fi)")
         case 4:
             // QUIC / HTTP3 Handshake to Google Cloud
             let quicPayload = Data([0xC0, 0x00, 0x00, 0x01, 0x08, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
@@ -258,7 +305,12 @@ public final class CaptureEngine: ObservableObject {
             return (createBleFrame(mfgData: Data([0x4C, 0x00, 0x12, 0x19, 0x10, 0xAA, 0xBB])), "ble0 (BLE Radio)")
         case 7:
             // ARP Request on LAN Gateway
-            return (createARPPacket(senderIP: "192.168.1.1", targetIP: localIP), "en0 (Wi-Fi)")
+            if cycle > 20 {
+                // Simulated ARP Poisoning / Spoofing attack from rogue host
+                return (createARPPacket(senderIP: "192.168.1.1", targetIP: localIP, senderMAC: [0x00, 0x11, 0x22, 0x33, 0x44, 0x55], isReply: true), "en0 (Wi-Fi)")
+            } else {
+                return (createARPPacket(senderIP: "192.168.1.1", targetIP: localIP, senderMAC: [0x6C, 0x03, 0xB5, 0x64, 0x39, 0x5E], isReply: false), "en0 (Wi-Fi)")
+            }
         case 8:
             // SSDP Multicast (UPnP Discovery)
             let ssdpPayload = Data("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n".utf8)
@@ -269,11 +321,11 @@ public final class CaptureEngine: ObservableObject {
         case 10:
             // Security Hunter Pillar: Cleartext Basic Auth in POST Body
             let leakPayload = Data("POST /v1/auth/login HTTP/1.1\r\nHost: internal-auth.lan\r\nAuthorization: Basic YWRtaW46U3VwZXJTZWNyZXRQYXNzIQ==\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nusername=admin&password=P@ssw0rd2026!&authToken=sample_test_auth_token".utf8)
-            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "192.168.1.50", srcPort: 53100, dstPort: 80, flags: 0x18, payload: leakPayload), "en0 (Wi-Fi)")
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "192.168.1.50", srcPort: 53100, dstPort: 80, flags: 0x18, payload: leakPayload, srcMAC: [0x70, 0xEE, 0x50, 0x11, 0x22, 0x33]), "en0 (Wi-Fi)")
         case 11:
-            // Security Hunter Pillar: Exposed Session Token & Secret Key
-            let tokenPayload = Data("POST /webhook HTTP/1.1\r\nHost: api.partner-sync.com\r\nContent-Type: application/json\r\n\r\n{\"sessionToken\":\"sample_test_token_abcdef123456\",\"secretKey\":\"sample_secret_key_mock_test\"}".utf8)
-            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "104.21.48.91", srcPort: 54200, dstPort: 80, flags: 0x18, payload: tokenPayload), "en0 (Wi-Fi)")
+            // Security Hunter Pillar: Exposed Cloud Keys & JWT Token
+            let tokenPayload = Data("POST /api/v2/deploy HTTP/1.1\r\nHost: api.cloudinfra.internal\r\nAuthorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\r\nContent-Type: application/json\r\n\r\n{\"aws_access_key\":\"MOCK_AWS_ACCESS_KEY_SAMPLE\",\"stripe_secret\":\"sec_sample_token_4eC39HqLyjWDarjtT1zdp7dc\"}".utf8)
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "104.21.48.91", srcPort: 54200, dstPort: 80, flags: 0x18, payload: tokenPayload, srcMAC: [0xB8, 0x27, 0xEB, 0x12, 0x34, 0x56]), "en0 (Wi-Fi)")
         case 12:
             // Deep L7 Dissector Pillar: WebSocket Text Frame
             let wsPayload = createWebSocketTextFrame(text: "{\"event\":\"telemetry\",\"coords\":{\"lat\":37.7749,\"lon\":-122.4194},\"status\":\"locked\"}")
@@ -281,11 +333,16 @@ public final class CaptureEngine: ObservableObject {
         case 13:
             // Deep L7 Dissector Pillar: mDNS / Bonjour Apple TV Announcement
             let mdnsPayload = createMDNSPacket(service: "_airplay._tcp.local")
-            return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.180", dstIP: "224.0.0.251", srcPort: 5353, dstPort: 5353, payload: mdnsPayload), "en0 (Wi-Fi)")
+            return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.180", dstIP: "224.0.0.251", srcPort: 5353, dstPort: 5353, payload: mdnsPayload, srcMAC: [0x70, 0xEE, 0x50, 0xAA, 0xBB, 0xCC]), "en0 (Wi-Fi)")
         case 14:
             // Deep L7 Dissector Pillar: DHCPv4 ACK Lease
-            let dhcpAck = createDHCPPacket(msgType: 5, clientIP: localIP, serverIP: "192.168.1.1")
-            return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.1", dstIP: localIP, srcPort: 67, dstPort: 68, payload: dhcpAck), "en0 (Wi-Fi)")
+            if cycle > 25 {
+                let rogueDhcp = createDHCPPacket(msgType: 5, clientIP: localIP, serverIP: "192.168.1.99")
+                return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.99", dstIP: localIP, srcPort: 67, dstPort: 68, payload: rogueDhcp, srcMAC: [0xB8, 0x27, 0xEB, 0x99, 0x88, 0x77]), "en0 (Wi-Fi)")
+            } else {
+                let dhcpAck = createDHCPPacket(msgType: 5, clientIP: localIP, serverIP: "192.168.1.1")
+                return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.1", dstIP: localIP, srcPort: 67, dstPort: 68, payload: dhcpAck, srcMAC: [0x6C, 0x03, 0xB5, 0x64, 0x39, 0x5E]), "en0 (Wi-Fi)")
+            }
         default:
             // Threat Detection Engine: Port Scan Probe
             let scanPort = scanPortCounter
@@ -301,25 +358,32 @@ public final class CaptureEngine: ObservableObject {
         return d
     }
 
-    private func createARPPacket(senderIP: String, targetIP: String) -> Data {
+    private func createARPPacket(senderIP: String, targetIP: String, senderMAC: [UInt8] = [0x6C, 0x03, 0xB5, 0x64, 0x39, 0x5E], isReply: Bool = false) -> Data {
         var d = Data(repeating: 0, count: 14)
+        d[0] = 0xFF; d[1] = 0xFF; d[2] = 0xFF; d[3] = 0xFF; d[4] = 0xFF; d[5] = 0xFF
+        d[6] = senderMAC[0]; d[7] = senderMAC[1]; d[8] = senderMAC[2]; d[9] = senderMAC[3]; d[10] = senderMAC[4]; d[11] = senderMAC[5]
         d[12] = 0x08; d[13] = 0x06 // ARP
         var arp = Data([
             0x00, 0x01, // HW Ethernet
             0x08, 0x00, // Proto IPv4
             0x06, 0x04, // HW Size 6, Proto Size 4
-            0x00, 0x01  // Request
+            0x00, isReply ? 0x02 : 0x01
         ])
-        arp.append(contentsOf: [0x6C, 0x03, 0xB5, 0x64, 0x39, 0x5E]) // Cisco MAC
+        arp.append(contentsOf: senderMAC)
         arp.append(contentsOf: parseIPv4Bytes(senderIP))
-        arp.append(contentsOf: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) // Target MAC
+        arp.append(contentsOf: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
         arp.append(contentsOf: parseIPv4Bytes(targetIP))
         d.append(arp)
         return d
     }
 
-    private func createIPv4TCPPacket(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, flags: UInt8, payload: Data) -> Data {
+    private func createIPv4TCPPacket(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, flags: UInt8, payload: Data, srcMAC: [UInt8]? = nil) -> Data {
         var d = Data(repeating: 0, count: 14)
+        if let mac = srcMAC, mac.count == 6 {
+            d[6] = mac[0]; d[7] = mac[1]; d[8] = mac[2]; d[9] = mac[3]; d[10] = mac[4]; d[11] = mac[5]
+        } else {
+            d[6] = 0xAC; d[7] = 0xDE; d[8] = 0x48; d[9] = 0x12; d[10] = 0x34; d[11] = 0x56 // Apple OUI
+        }
         d[12] = 0x08; d[13] = 0x00
         var ip = Data([0x45, 0x00, 0x00, 0x00, 0x12, 0x34, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00])
         ip.append(contentsOf: parseIPv4Bytes(srcIP))
@@ -351,8 +415,13 @@ public final class CaptureEngine: ObservableObject {
         return createIPv4UDPPacketWithPayload(srcIP: srcIP, dstIP: dstIP, srcPort: srcPort, dstPort: dstPort, payload: dns)
     }
 
-    private func createIPv4UDPPacketWithPayload(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, payload: Data) -> Data {
+    private func createIPv4UDPPacketWithPayload(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, payload: Data, srcMAC: [UInt8]? = nil) -> Data {
         var d = Data(repeating: 0, count: 14)
+        if let mac = srcMAC, mac.count == 6 {
+            d[6] = mac[0]; d[7] = mac[1]; d[8] = mac[2]; d[9] = mac[3]; d[10] = mac[4]; d[11] = mac[5]
+        } else {
+            d[6] = 0x6C; d[7] = 0x03; d[8] = 0xB5; d[9] = 0x64; d[10] = 0x39; d[11] = 0x5E // Cisco OUI
+        }
         d[12] = 0x08; d[13] = 0x00
         var ip = Data([0x45, 0x00, 0x00, 0x00, 0x56, 0x78, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00])
         ip.append(contentsOf: parseIPv4Bytes(srcIP))

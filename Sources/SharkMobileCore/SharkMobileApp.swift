@@ -1,3 +1,4 @@
+#if canImport(UIKit) && !os(macOS)
 import SwiftUI
 
 @main
@@ -10,3 +11,4 @@ public struct SharkMobileApp: App {
         }
     }
 }
+#endif
