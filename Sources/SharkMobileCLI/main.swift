@@ -3,7 +3,7 @@ import Foundation
 @MainActor
 func runMissionDiagnostics() {
     print("🦈 ==============================================================================")
-    print("🦈 SHARKMOBILE TACTICAL MISSION COMMAND & CYBER FORENSICS WORKSTATION")
+    print("🦈 POCKETSHARK // WIRESHARK IN YOUR POCKET (MOBILE & DESKTOP)")
     print("🦈 ==============================================================================")
 
     let engine = CaptureEngine()

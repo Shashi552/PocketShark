@@ -5,7 +5,7 @@ import UIKit
 #endif
 
 // MARK: - Brand Icon & Logo Component
-public struct AetherSharkLogoView: View {
+public struct PocketSharkLogoView: View {
     public var size: CGFloat = 28
 
     public init(size: CGFloat = 28) {
@@ -73,6 +73,8 @@ public struct AetherSharkLogoView: View {
         .frame(width: size, height: size)
     }
 }
+
+public typealias AetherSharkLogoView = PocketSharkLogoView
 
 // MARK: - Root Tab View: Tactical Mission Command
 public struct SharkMobileMainView: View {
@@ -207,12 +209,12 @@ public struct SnifferDashboardView: View {
                 VStack(spacing: 6) {
                     // Brand Identity Header
                     HStack(spacing: 8) {
-                        AetherSharkLogoView(size: 26)
+                        PocketSharkLogoView(size: 26)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("AETHERSHARK")
+                            Text("POCKETSHARK")
                                 .font(.system(size: 13, weight: .black, design: .monospaced))
                                 .foregroundColor(Color(hex: "#00F0FF"))
-                            Text("LIVE AIRSPACE & PACKET FORENSICS")
+                            Text("WIRESHARK IN YOUR POCKET")
                                 .font(.system(size: 8, weight: .bold, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
@@ -427,7 +429,7 @@ public struct SnifferDashboardView: View {
                 .padding(.vertical, 5)
                 .background(Color.secondary.opacity(0.08))
             }
-            .navigationTitle("AetherShark")
+            .navigationTitle("PocketShark")
             .applyPlatformNavigationInline()
             .sheet(item: $inspectedPacket) { packet in
                 PacketInspectorModalView(packet: packet, allPackets: engine.packets) {
@@ -1357,7 +1359,7 @@ public struct VaultAndRadiosView: View {
 
     private func exportMobileConfig() {
         let data = vpnManager.generateMobileConfig()
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("SharkMobile_Interceptor.mobileconfig")
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("PocketShark_Interceptor.mobileconfig")
         try? data.write(to: tempURL)
 
         #if canImport(UIKit)
@@ -1373,7 +1375,7 @@ public struct VaultAndRadiosView: View {
         }
         #elseif os(macOS)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: "/tmp")
-        let dest = downloads.appendingPathComponent("SharkMobile_Interceptor.mobileconfig")
+        let dest = downloads.appendingPathComponent("PocketShark_Interceptor.mobileconfig")
         try? data.write(to: dest)
         #endif
     }

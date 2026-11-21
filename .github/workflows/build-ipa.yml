@@ -1,4 +1,4 @@
-name: Build SharkMobile IPA
+name: Build PocketShark IPA
 
 on:
   workflow_dispatch:
@@ -52,11 +52,11 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>SharkMobile</string>
               <key>CFBundleIdentifier</key>
-              <string>com.shashank.aethershark</string>
+              <string>com.shashank.pocketshark</string>
               <key>CFBundleName</key>
-              <string>AetherShark</string>
+              <string>PocketShark</string>
               <key>CFBundleDisplayName</key>
-              <string>AetherShark</string>
+              <string>PocketShark</string>
               <key>CFBundleIconName</key>
               <string>AppIcon</string>
               <key>CFBundlePackageType</key>
@@ -100,13 +100,14 @@ jobs:
       - name: Package IPA
         run: |
           cd build
-          zip -qr ../SharkMobile.ipa Payload
+          zip -qr ../PocketShark.ipa Payload
+          cp ../PocketShark.ipa ../SharkMobile.ipa
           cd ..
-          ls -lh SharkMobile.ipa
+          ls -lh PocketShark.ipa
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SharkMobile-IPA
-          path: SharkMobile.ipa
+          name: PocketShark-IPA
+          path: PocketShark.ipa
           retention-days: 14

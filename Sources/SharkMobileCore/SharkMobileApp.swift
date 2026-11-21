@@ -6,7 +6,7 @@ public struct SharkMobileApp: App {
     public init() {}
 
     public var body: some Scene {
-        WindowGroup("AetherShark // Tactical Airspace & Network Forensics") {
+        WindowGroup("PocketShark // Wireshark in your Pocket") {
             SharkMobileMainView()
                 #if os(macOS)
                 .frame(minWidth: 960, minHeight: 680)
