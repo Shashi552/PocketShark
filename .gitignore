@@ -1,0 +1,8 @@
+.DS_Store
+*.o
+*.d
+*.dia
+*.swp
+*.ipa
+build/
+.build/

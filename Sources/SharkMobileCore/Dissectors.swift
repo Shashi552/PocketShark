@@ -8,6 +8,10 @@ public struct PacketDissector {
         var dst = "Unknown"
         var proto: ProtocolType = .unknown
         var info = "Raw Packet Data (\(rawData.count) bytes)"
+        var expert: ExpertInfo? = nil
+        var geoFlag: String? = nil
+        var geoCountry: String? = nil
+        var geoAsn: String? = nil
 
         // Frame Layer
         layers.append(DissectedLayer(
@@ -44,6 +48,7 @@ public struct PacketDissector {
                 }
             }
             info = "BLE ADV_NONCONN_IND [\(continuity)] RSSI=\(rssi) dBm"
+            expert = ExpertInfo(severity: .chat, message: "Bluetooth Low Energy Advertisement Beacon", group: "BLE")
             layers.append(DissectedLayer(
                 name: "Bluetooth Low Energy Link Layer",
                 summary: info,
@@ -55,16 +60,25 @@ public struct PacketDissector {
                 ],
                 byteRange: 0..<rawData.count
             ))
-            return PacketRecord(id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto, length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface)
+            return PacketRecord(
+                id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto,
+                length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface,
+                expertInfo: expert
+            )
         }
 
         if rawData.count < 14 {
-            return PacketRecord(id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto, length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface)
+            expert = ExpertInfo(severity: .error, message: "Truncated short frame (< 14 bytes)", group: "Frame")
+            return PacketRecord(
+                id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto,
+                length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface,
+                expertInfo: expert
+            )
         }
 
         // Ethernet II vs Raw IP detection
         let isEthernet = (rawData[12] == 0x08 && rawData[13] == 0x00) || (rawData[12] == 0x86 && rawData[13] == 0xDD) || (rawData[12] == 0x08 && rawData[13] == 0x06)
-        
+
         if isEthernet {
             let ethSrc = formatMAC(rawData.subdata(in: 6..<12))
             let ethDst = formatMAC(rawData.subdata(in: 0..<6))
@@ -95,6 +109,8 @@ public struct PacketDissector {
                 dst = targetIP
                 let opStr = opcode == 1 ? "Who has \(targetIP)? Tell \(senderIP)" : "\(senderIP) is at \(senderMAC)"
                 info = "ARP: \(opStr)"
+                expert = ExpertInfo(severity: opcode == 1 ? .chat : .note, message: "ARP \(opcode == 1 ? "Resolution Request" : "Gratuitous / Direct Reply")", group: "ARP")
+
                 layers.append(DissectedLayer(
                     name: "Address Resolution Protocol (\(opcode == 1 ? "request" : "reply"))",
                     summary: info,
@@ -109,21 +125,29 @@ public struct PacketDissector {
                     ],
                     byteRange: offset..<offset + 28
                 ))
-                return PacketRecord(id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto, length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface)
+                return PacketRecord(
+                    id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto,
+                    length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface,
+                    expertInfo: expert
+                )
             }
         } else {
             offset = 0
         }
 
         if offset >= rawData.count {
-            return PacketRecord(id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto, length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface)
+            return PacketRecord(
+                id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto,
+                length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface
+            )
         }
 
         let ipVersion = (rawData[offset] >> 4) & 0x0F
         if ipVersion == 4 && rawData.count >= offset + 20 {
             proto = .ipv4
             let ipStart = offset
-            let ihl = Int(rawData[offset] & 0x0F) * 4
+            let rawIhl = Int(rawData[offset] & 0x0F) * 4
+            let ihl = (rawIhl >= 20 && offset + rawIhl <= rawData.count) ? rawIhl : 20
             let totalLen = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
             let id = Int(rawData[offset + 4]) << 8 | Int(rawData[offset + 5])
             let ttl = Int(rawData[offset + 8])
@@ -131,9 +155,16 @@ public struct PacketDissector {
             src = formatIPv4(rawData.subdata(in: offset + 12..<offset + 16))
             dst = formatIPv4(rawData.subdata(in: offset + 16..<offset + 20))
 
+            // Offline GeoIP Enrichment
+            let lookupTarget = !dst.hasPrefix("192.168.") && !dst.hasPrefix("10.") && !dst.hasPrefix("127.") ? dst : src
+            let geo = OfflineGeoIP.lookup(ipString: lookupTarget)
+            geoFlag = geo.flagEmoji
+            geoCountry = geo.countryName
+            geoAsn = geo.asn
+
             layers.append(DissectedLayer(
                 name: "Internet Protocol Version 4",
-                summary: "IPv4, Src: \(src), Dst: \(dst)",
+                summary: "IPv4, Src: \(src), Dst: \(dst) (TTL: \(ttl))",
                 fields: [
                     FieldDetail(name: "Version", value: "4", byteRange: ipStart..<ipStart + 1),
                     FieldDetail(name: "Header Length", value: "\(ihl) bytes (\(ihl/4))", byteRange: ipStart..<ipStart + 1),
@@ -142,9 +173,10 @@ public struct PacketDissector {
                     FieldDetail(name: "Time to Live", value: "\(ttl)", byteRange: ipStart + 8..<ipStart + 9),
                     FieldDetail(name: "Protocol", value: "\(ipProto)", byteRange: ipStart + 9..<ipStart + 10),
                     FieldDetail(name: "Source Address", value: src, byteRange: ipStart + 12..<ipStart + 16),
-                    FieldDetail(name: "Destination Address", value: dst, byteRange: ipStart + 16..<ipStart + 20)
+                    FieldDetail(name: "Destination Address", value: dst, byteRange: ipStart + 16..<ipStart + 20),
+                    FieldDetail(name: "Geo Location", value: "\(geo.flagEmoji) \(geo.countryName) (\(geo.asn))")
                 ],
-                byteRange: ipStart..<ipStart + ihl
+                byteRange: ipStart..<min(rawData.count, ipStart + ihl)
             ))
 
             offset += ihl
@@ -157,7 +189,8 @@ public struct PacketDissector {
                 let dstPort = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
                 let seq = UInt32(rawData[offset + 4]) << 24 | UInt32(rawData[offset + 5]) << 16 | UInt32(rawData[offset + 6]) << 8 | UInt32(rawData[offset + 7])
                 let ack = UInt32(rawData[offset + 8]) << 24 | UInt32(rawData[offset + 9]) << 16 | UInt32(rawData[offset + 10]) << 8 | UInt32(rawData[offset + 11])
-                let dataOffset = Int((rawData[offset + 12] >> 4) & 0x0F) * 4
+                let rawDataOffset = Int((rawData[offset + 12] >> 4) & 0x0F) * 4
+                let dataOffset = (rawDataOffset >= 20 && offset + rawDataOffset <= rawData.count) ? rawDataOffset : 20
                 let flags = rawData[offset + 13]
                 let window = Int(rawData[offset + 14]) << 8 | Int(rawData[offset + 15])
 
@@ -171,6 +204,21 @@ public struct PacketDissector {
 
                 info = "\(srcPort) → \(dstPort) [\(flagSummary)] Seq=\(seq) Ack=\(ack) Win=\(window)"
 
+                // Expert Info evaluation
+                if (flags & 0x04) != 0 {
+                    expert = ExpertInfo(severity: .error, message: "Connection Reset (RST) - Connection forcibly aborted", group: "TCP")
+                } else if window == 0 {
+                    expert = ExpertInfo(severity: .error, message: "TCP Zero Window: Receiver buffer exhausted", group: "TCP")
+                } else if (flags & 0x02) != 0 && (flags & 0x10) != 0 {
+                    expert = ExpertInfo(severity: .note, message: "TCP Handshake [SYN-ACK] Response", group: "TCP")
+                } else if (flags & 0x02) != 0 {
+                    expert = ExpertInfo(severity: .note, message: "TCP Connection Request [SYN]", group: "TCP")
+                } else if (flags & 0x01) != 0 {
+                    expert = ExpertInfo(severity: .chat, message: "TCP Connection Closing [FIN]", group: "TCP")
+                } else {
+                    expert = ExpertInfo(severity: .chat, message: "Normal TCP Segment Transmission", group: "TCP")
+                }
+
                 layers.append(DissectedLayer(
                     name: "Transmission Control Protocol",
                     summary: "TCP, Src Port: \(srcPort), Dst Port: \(dstPort), Seq: \(seq), Ack: \(ack)",
@@ -182,15 +230,78 @@ public struct PacketDissector {
                         FieldDetail(name: "Flags", value: String(format: "0x%03x [\(flagSummary)]", flags), byteRange: tcpStart + 12..<tcpStart + 14),
                         FieldDetail(name: "Window Size", value: "\(window)", byteRange: tcpStart + 14..<tcpStart + 16)
                     ],
-                    byteRange: tcpStart..<tcpStart + dataOffset
+                    byteRange: tcpStart..<min(rawData.count, tcpStart + dataOffset)
                 ))
 
                 offset += dataOffset
 
-                // L7 Detection
+                // L7 Detection over TCP
                 if offset < rawData.count {
                     let payload = rawData.subdata(in: offset..<rawData.count)
-                    if payload.count >= 5 && payload[0] == 0x16 && payload[1] == 0x03 {
+
+                    // 1. WebSocket Frame Dissection (RFC 6455)
+                    if payload.count >= 2 && isWebSocketFrame(payload: payload) {
+                        proto = .websocket
+                        let fin = (payload[0] & 0x80) != 0
+                        let opcodeVal = payload[0] & 0x0F
+                        let isMasked = (payload[1] & 0x80) != 0
+                        var payLen = Int(payload[1] & 0x7F)
+                        var wsOffset = 2
+
+                        if payLen == 126 && payload.count >= wsOffset + 2 {
+                            payLen = Int(payload[wsOffset]) << 8 | Int(payload[wsOffset + 1])
+                            wsOffset += 2
+                        } else if payLen == 127 && payload.count >= wsOffset + 8 {
+                            payLen = Int(payload[wsOffset + 6]) << 8 | Int(payload[wsOffset + 7]) // Read low 16
+                            wsOffset += 8
+                        }
+
+                        var maskingKey: [UInt8] = []
+                        if isMasked && payload.count >= wsOffset + 4 {
+                            maskingKey = [payload[wsOffset], payload[wsOffset + 1], payload[wsOffset + 2], payload[wsOffset + 3]]
+                            wsOffset += 4
+                        }
+
+                        // Unmask payload safely
+                        let safeWsStart = min(wsOffset, payload.count)
+                        let safeWsEnd = min(payload.count, max(safeWsStart, safeWsStart + max(0, payLen)))
+                        let rawPayload = payload.subdata(in: safeWsStart..<safeWsEnd)
+                        var unmaskedBytes = [UInt8](rawPayload)
+                        if isMasked && !maskingKey.isEmpty {
+                            for i in 0..<unmaskedBytes.count {
+                                unmaskedBytes[i] ^= maskingKey[i % 4]
+                            }
+                        }
+                        let unmaskedStr = String(decoding: unmaskedBytes, as: UTF8.self)
+
+                        let opcodeName: String
+                        switch opcodeVal {
+                        case 0x01: opcodeName = "Text"
+                        case 0x02: opcodeName = "Binary"
+                        case 0x08: opcodeName = "Close"
+                        case 0x09: opcodeName = "Ping"
+                        case 0x0A: opcodeName = "Pong"
+                        default: opcodeName = String(format: "0x%X", opcodeVal)
+                        }
+
+                        info = "WebSocket \(opcodeName) [FIN=\(fin ? 1 : 0), Mask=\(isMasked ? 1 : 0)] Len=\(payLen): \(unmaskedStr.prefix(60))"
+                        expert = ExpertInfo(severity: .chat, message: "WebSocket Frame [\(opcodeName)]", group: "WebSocket")
+
+                        layers.append(DissectedLayer(
+                            name: "WebSocket Protocol (RFC 6455)",
+                            summary: info,
+                            fields: [
+                                FieldDetail(name: "FIN Flag", value: fin ? "Final Frame (1)" : "More fragments follow (0)"),
+                                FieldDetail(name: "Opcode", value: "\(opcodeName) (\(opcodeVal))"),
+                                FieldDetail(name: "Mask", value: isMasked ? "Masked by client (1)" : "Unmasked (0)"),
+                                FieldDetail(name: "Payload Length", value: "\(payLen) bytes"),
+                                FieldDetail(name: "Masking Key", value: maskingKey.map { String(format: "%02x", $0) }.joined(separator: " ")),
+                                FieldDetail(name: "Unmasked Payload", value: unmaskedStr)
+                            ],
+                            byteRange: offset..<rawData.count
+                        ))
+                    } else if payload.count >= 5 && payload[0] == 0x16 && payload[1] == 0x03 {
+                        // TLS Handshake
                         proto = .tls
                         let tlsVer = String(format: "0x%02x%02x", payload[1], payload[2])
                         let tlsLen = Int(payload[3]) << 8 | Int(payload[4])
@@ -206,29 +317,46 @@ public struct PacketDissector {
                                 tlsInfo += " (SNI=\(sni))"
                                 tlsFields.append(FieldDetail(name: "Server Name Indication", value: sni))
                             }
+                            expert = ExpertInfo(severity: .note, message: "TLS Handshake Initiation [Client Hello]", group: "TLS")
                         } else if payload.count >= 9 && payload[5] == 0x02 {
                             tlsInfo = "TLS Server Hello"
+                            expert = ExpertInfo(severity: .note, message: "TLS Cipher Suite Accepted [Server Hello]", group: "TLS")
                         }
                         info = "\(srcPort) → \(dstPort) \(tlsInfo)"
                         layers.append(DissectedLayer(name: "Transport Layer Security", summary: tlsInfo, fields: tlsFields, byteRange: offset..<rawData.count))
                     } else if srcPort == 22 || dstPort == 22 {
                         proto = .ssh
                         info = "SSH Protocol Packet"
-                        if let banner = String(data: payload.prefix(min(payload.count, 64)), encoding: .utf8), banner.hasPrefix("SSH-") {
+                        let banner = String(decoding: payload.prefix(min(payload.count, 64)), as: UTF8.self)
+                        if banner.hasPrefix("SSH-") {
                             info = "SSH Identification: \(banner.trimmingCharacters(in: .whitespacesAndNewlines))"
                         }
+                        expert = ExpertInfo(severity: .chat, message: "Encrypted SSH Transport Traffic", group: "SSH")
                         layers.append(DissectedLayer(name: "Secure Shell Protocol", summary: info, fields: [FieldDetail(name: "SSH Payload", value: "\(payload.count) bytes")], byteRange: offset..<rawData.count))
-                    } else if let httpStr = String(data: payload.prefix(min(payload.count, 2048)), encoding: .utf8),
-                              httpStr.hasPrefix("GET ") || httpStr.hasPrefix("POST ") || httpStr.hasPrefix("HTTP/1.") || httpStr.hasPrefix("PUT ") {
-                        proto = .http
-                        let firstLine = httpStr.components(separatedBy: "\r\n").first ?? ""
-                        info = firstLine
-                        layers.append(DissectedLayer(
-                            name: "Hypertext Transfer Protocol",
-                            summary: firstLine,
-                            fields: [FieldDetail(name: "Request / Status Line", value: firstLine, byteRange: offset..<offset + min(firstLine.count, payload.count))],
-                            byteRange: offset..<rawData.count
-                        ))
+                    } else {
+                        let httpStr = String(decoding: payload.prefix(min(payload.count, 2048)), as: UTF8.self)
+                        if httpStr.hasPrefix("GET ") || httpStr.hasPrefix("POST ") || httpStr.hasPrefix("HTTP/1.") || httpStr.hasPrefix("PUT ") || httpStr.hasPrefix("HEAD ") || httpStr.hasPrefix("DELETE ") || httpStr.hasPrefix("OPTIONS ") {
+                            proto = .http
+                            let firstLine = httpStr.components(separatedBy: "\r\n").first ?? ""
+                            info = firstLine
+
+                            if firstLine.contains("200 OK") {
+                                expert = ExpertInfo(severity: .chat, message: "HTTP 200 OK Successful Response", group: "HTTP")
+                            } else if firstLine.contains("301") || firstLine.contains("302") {
+                                expert = ExpertInfo(severity: .note, message: "HTTP Redirection", group: "HTTP")
+                            } else if firstLine.contains("401") || firstLine.contains("403") || firstLine.contains("500") {
+                                expert = ExpertInfo(severity: .error, message: "HTTP Status Error: \(firstLine)", group: "HTTP")
+                            } else {
+                                expert = ExpertInfo(severity: .note, message: "HTTP Client Request: \(firstLine.prefix(40))", group: "HTTP")
+                            }
+
+                            layers.append(DissectedLayer(
+                                name: "Hypertext Transfer Protocol",
+                                summary: firstLine,
+                                fields: [FieldDetail(name: "Request / Status Line", value: firstLine, byteRange: offset..<offset + min(firstLine.utf8.count, payload.count))],
+                                byteRange: offset..<rawData.count
+                            ))
+                        }
                     }
                 }
             } else if ipProto == 17 && rawData.count >= offset + 8 { // UDP
@@ -252,17 +380,41 @@ public struct PacketDissector {
 
                 offset += 8
 
-                if (srcPort == 53 || dstPort == 53 || srcPort == 5353 || dstPort == 5353) && rawData.count >= offset + 12 {
+                // Deep UDP Dissection: DNS, mDNS, DHCP, QUIC, SSDP
+                if (srcPort == 5353 || dstPort == 5353) && rawData.count >= offset + 12 {
+                    // mDNS / Bonjour
+                    proto = .mdns
+                    let dnsStart = offset
+                    let txId = Int(rawData[offset]) << 8 | Int(rawData[offset + 1])
+                    let dnsFlags = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
+                    let isResponse = (dnsFlags & 0x8000) != 0
+                    let qName = extractDNSQueryName(rawData: rawData, startOffset: offset + 12)
+                    info = "mDNS \(isResponse ? "response" : "query") 0x\(String(format: "%04x", txId)) \(qName)"
+                    expert = ExpertInfo(severity: .chat, message: "mDNS Bonjour Service Discovery", group: "mDNS")
+
+                    layers.append(DissectedLayer(
+                        name: "Multicast DNS (Bonjour / ZeroConf)",
+                        summary: info,
+                        fields: [
+                            FieldDetail(name: "Transaction ID", value: String(format: "0x%04x", txId), byteRange: dnsStart..<dnsStart + 2),
+                            FieldDetail(name: "Flags", value: String(format: "0x%04x (Authoritative mDNS)", dnsFlags), byteRange: dnsStart + 2..<dnsStart + 4),
+                            FieldDetail(name: "Queried / Announced Service", value: qName)
+                        ],
+                        byteRange: dnsStart..<rawData.count
+                    ))
+                } else if (srcPort == 53 || dstPort == 53) && rawData.count >= offset + 12 {
+                    // Standard DNS
                     proto = .dns
                     let dnsStart = offset
                     let txId = Int(rawData[offset]) << 8 | Int(rawData[offset + 1])
                     let dnsFlags = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
                     let isResponse = (dnsFlags & 0x8000) != 0
                     let qName = extractDNSQueryName(rawData: rawData, startOffset: offset + 12)
-                    let protoLabel = (srcPort == 5353 || dstPort == 5353) ? "mDNS" : "DNS"
-                    info = "\(protoLabel) \(isResponse ? "response" : "query") 0x\(String(format: "%04x", txId)) \(qName)"
+                    info = "DNS \(isResponse ? "response" : "query") 0x\(String(format: "%04x", txId)) \(qName)"
+                    expert = ExpertInfo(severity: .chat, message: isResponse ? "DNS Resolution Answer" : "DNS Domain Lookup", group: "DNS")
+
                     layers.append(DissectedLayer(
-                        name: "Domain Name System (\(protoLabel))",
+                        name: "Domain Name System",
                         summary: info,
                         fields: [
                             FieldDetail(name: "Transaction ID", value: String(format: "0x%04x", txId), byteRange: dnsStart..<dnsStart + 2),
@@ -271,24 +423,179 @@ public struct PacketDissector {
                         ],
                         byteRange: dnsStart..<rawData.count
                     ))
+                } else if (srcPort == 67 || srcPort == 68 || dstPort == 67 || dstPort == 68) && rawData.count >= offset + 240 {
+                    // DHCPv4 / BOOTP Dissector with full Options parsing
+                    proto = .dhcp
+                    let dhcpStart = offset
+                    let op = rawData[offset]
+                    let xid = UInt32(rawData[offset + 4]) << 24 | UInt32(rawData[offset + 5]) << 16 | UInt32(rawData[offset + 6]) << 8 | UInt32(rawData[offset + 7])
+                    let clientIP = formatIPv4(rawData.subdata(in: offset + 12..<offset + 16))
+                    let yourIP = formatIPv4(rawData.subdata(in: offset + 16..<offset + 20))
+                    let serverIP = formatIPv4(rawData.subdata(in: offset + 20..<offset + 24))
+                    let clientMAC = formatMAC(rawData.subdata(in: offset + 28..<offset + 34))
+
+                    var optionsMap: [String: String] = [:]
+                    var msgType = "BootRequest"
+                    if op == 2 { msgType = "BootReply" }
+
+                    // Options start at byte 240 (after 4-byte magic cookie 0x63 0x82 0x53 0x63)
+                    var optIdx = offset + 240
+                    while optIdx < rawData.count {
+                        let optCode = rawData[optIdx]
+                        if optCode == 255 { break } // End option
+                        if optCode == 0 { optIdx += 1; continue } // Pad
+                        guard optIdx + 1 < rawData.count else { break }
+                        let optLen = Int(rawData[optIdx + 1])
+                        guard optIdx + 2 + optLen <= rawData.count else { break }
+
+                        let optData = rawData.subdata(in: (optIdx + 2)..<(optIdx + 2 + optLen))
+                        switch optCode {
+                        case 53: // Message Type
+                            if let typeByte = optData.first {
+                                switch typeByte {
+                                case 1: msgType = "DHCP Discover"
+                                case 2: msgType = "DHCP Offer"
+                                case 3: msgType = "DHCP Request"
+                                case 4: msgType = "DHCP Decline"
+                                case 5: msgType = "DHCP ACK"
+                                case 6: msgType = "DHCP NAK"
+                                case 7: msgType = "DHCP Release"
+                                case 8: msgType = "DHCP Inform"
+                                default: msgType = "DHCP Type \(typeByte)"
+                                }
+                            }
+                            optionsMap["DHCP Message Type"] = msgType
+                        case 1: // Subnet Mask
+                            optionsMap["Subnet Mask"] = formatIPv4(optData)
+                        case 3: // Router
+                            optionsMap["Router / Gateway"] = formatIPv4(optData)
+                        case 6: // DNS
+                            optionsMap["Domain Name Server"] = formatIPv4(optData)
+                        case 12: // Host Name
+                            optionsMap["Host Name"] = String(data: optData, encoding: .utf8) ?? "N/A"
+                        case 51: // Lease Time
+                            if optData.count >= 4 {
+                                let lease = UInt32(optData[0]) << 24 | UInt32(optData[1]) << 16 | UInt32(optData[2]) << 8 | UInt32(optData[3])
+                                optionsMap["IP Address Lease Time"] = "\(lease)s"
+                            }
+                        default:
+                            break
+                        }
+                        optIdx += 2 + optLen
+                    }
+
+                    info = "\(msgType) - Transaction ID 0x\(String(format: "%08x", xid))"
+                    if yourIP != "0.0.0.0" { info += " (Assigned: \(yourIP))" }
+                    expert = ExpertInfo(severity: .note, message: "DHCP Network Configuration Lease [\(msgType)]", group: "DHCP")
+
+                    var dhcpFields: [FieldDetail] = [
+                        FieldDetail(name: "Message Opcode", value: op == 1 ? "BOOTREQUEST (1)" : "BOOTREPLY (2)", byteRange: dhcpStart..<dhcpStart + 1),
+                        FieldDetail(name: "Transaction ID", value: String(format: "0x%08x", xid), byteRange: dhcpStart + 4..<dhcpStart + 8),
+                        FieldDetail(name: "Client IP (ciaddr)", value: clientIP, byteRange: dhcpStart + 12..<dhcpStart + 16),
+                        FieldDetail(name: "Your IP (yiaddr)", value: yourIP, byteRange: dhcpStart + 16..<dhcpStart + 20),
+                        FieldDetail(name: "Server IP (siaddr)", value: serverIP, byteRange: dhcpStart + 20..<dhcpStart + 24),
+                        FieldDetail(name: "Client MAC Address", value: clientMAC, byteRange: dhcpStart + 28..<dhcpStart + 34)
+                    ]
+                    for (k, v) in optionsMap {
+                        dhcpFields.append(FieldDetail(name: k, value: v))
+                    }
+
+                    layers.append(DissectedLayer(
+                        name: "Dynamic Host Configuration Protocol",
+                        summary: info,
+                        fields: dhcpFields,
+                        byteRange: dhcpStart..<rawData.count
+                    ))
+                } else if (srcPort == 443 || dstPort == 443 || srcPort == 8443 || dstPort == 8443) && rawData.count > offset + 4 {
+                    // QUIC / HTTP3 Deep Dissector
+                    proto = .quic
+                    let quicStart = offset
+                    let firstByte = rawData[offset]
+                    let isLongHeader = (firstByte & 0x80) != 0
+
+                    if isLongHeader {
+                        let pktTypeVal = (firstByte & 0x30) >> 4
+                        let typeName: String
+                        switch pktTypeVal {
+                        case 0x00: typeName = "Initial"
+                        case 0x01: typeName = "0-RTT"
+                        case 0x02: typeName = "Handshake"
+                        case 0x03: typeName = "Retry"
+                        default: typeName = "Long Header"
+                        }
+
+                        var versionStr = "Unknown"
+                        if rawData.count >= offset + 5 {
+                            let ver = UInt32(rawData[offset + 1]) << 24 | UInt32(rawData[offset + 2]) << 16 | UInt32(rawData[offset + 3]) << 8 | UInt32(rawData[offset + 4])
+                            if ver == 0x00000001 { versionStr = "QUIC v1 (RFC 9000)" }
+                            else if ver == 0xff00001d { versionStr = "draft-29" }
+                            else { versionStr = String(format: "0x%08x", ver) }
+                        }
+
+                        info = "QUIC \(typeName) [\(versionStr)] Len=\(rawData.count - offset)"
+                        expert = ExpertInfo(severity: .chat, message: "QUIC/HTTP3 Handshake Transport Packet", group: "QUIC")
+
+                        layers.append(DissectedLayer(
+                            name: "QUIC Transport Protocol",
+                            summary: info,
+                            fields: [
+                                FieldDetail(name: "Header Form", value: "Long Header (1)", byteRange: quicStart..<quicStart + 1),
+                                FieldDetail(name: "Packet Type", value: "\(typeName) (\(pktTypeVal))"),
+                                FieldDetail(name: "Version", value: versionStr, byteRange: quicStart + 1..<quicStart + 5),
+                                FieldDetail(name: "Payload Bytes", value: "\(rawData.count - offset - 5) bytes")
+                            ],
+                            byteRange: quicStart..<rawData.count
+                        ))
+                    } else {
+                        // Short Header (1-RTT)
+                        info = "QUIC 1-RTT Protected Application Data"
+                        expert = ExpertInfo(severity: .chat, message: "QUIC 1-RTT Stream Data", group: "QUIC")
+                        layers.append(DissectedLayer(
+                            name: "QUIC Transport Protocol",
+                            summary: info,
+                            fields: [
+                                FieldDetail(name: "Header Form", value: "Short Header (0)", byteRange: quicStart..<quicStart + 1),
+                                FieldDetail(name: "Payload", value: "\(rawData.count - offset) bytes (Encrypted)")
+                            ],
+                            byteRange: quicStart..<rawData.count
+                        ))
+                    }
                 } else if srcPort == 1900 || dstPort == 1900 {
                     proto = .ssdp
                     info = "SSDP Discovery M-SEARCH / NOTIFY"
+                    expert = ExpertInfo(severity: .chat, message: "SSDP UPnP Service Announcement", group: "SSDP")
                     layers.append(DissectedLayer(name: "Simple Service Discovery Protocol", summary: info, fields: [FieldDetail(name: "Port", value: "1900 (Multicast)")], byteRange: offset..<rawData.count))
-                } else if srcPort == 67 || srcPort == 68 || dstPort == 67 || dstPort == 68 {
-                    proto = .dhcp
-                    info = "DHCP / BOOTP Dynamic Host Configuration"
-                    layers.append(DissectedLayer(name: "Dynamic Host Configuration Protocol", summary: info, fields: [FieldDetail(name: "Port", value: "67/68")], byteRange: offset..<rawData.count))
-                } else if (srcPort == 443 || dstPort == 443) && rawData.count > offset + 4 {
-                    proto = .quic
-                    info = "QUIC / HTTP3 UDP Transport"
-                    layers.append(DissectedLayer(name: "QUIC Transport Protocol", summary: info, fields: [FieldDetail(name: "Destination Port", value: "\(dstPort)")], byteRange: offset..<rawData.count))
                 }
             } else if ipProto == 1 { // ICMP
                 proto = .icmp
+                guard rawData.count >= offset + 2 else {
+                    info = "ICMP Fragment (\(rawData.count - offset) bytes)"
+                    layers.append(DissectedLayer(name: "Internet Control Message Protocol", summary: info, fields: [], byteRange: offset..<rawData.count))
+                    return PacketRecord(id: packetId, timestamp: timestamp, source: src, destination: dst, protocolType: proto, length: rawData.count, info: info, rawData: rawData, layers: layers, interface: interface, expertInfo: ExpertInfo(severity: .warning, message: "Truncated ICMP Header", group: "ICMP"), countryFlag: geoFlag, countryName: geoCountry, asnInfo: geoAsn)
+                }
                 let icmpType = rawData[offset]
                 let icmpCode = rawData[offset + 1]
-                info = "Echo (ping) \(icmpType == 8 ? "request" : "reply") id=0x\(String(format: "%02x", rawData[offset + 4]))"
+                let isReq = (icmpType == 8)
+                let isReply = (icmpType == 0)
+
+                if isReq || isReply {
+                    let idStr: String
+                    if rawData.count >= offset + 6 {
+                        let icmpId = UInt16(rawData[offset + 4]) << 8 | UInt16(rawData[offset + 5])
+                        idStr = " id=0x\(String(format: "%04x", icmpId))"
+                    } else {
+                        idStr = ""
+                    }
+                    info = "Echo (ping) \(isReq ? "request" : "reply")\(idStr)"
+                    expert = ExpertInfo(severity: .chat, message: "ICMP Echo \(isReq ? "Request" : "Reply")", group: "ICMP")
+                } else if icmpType == 3 {
+                    info = "Destination Unreachable (Code: \(icmpCode))"
+                    expert = ExpertInfo(severity: .error, message: "ICMP Destination Unreachable", group: "ICMP")
+                } else {
+                    info = "ICMP Message Type=\(icmpType) Code=\(icmpCode)"
+                    expert = ExpertInfo(severity: .warning, message: "ICMP Control Message", group: "ICMP")
+                }
+
                 layers.append(DissectedLayer(
                     name: "Internet Control Message Protocol",
                     summary: info,
@@ -298,6 +605,47 @@ public struct PacketDissector {
                     ],
                     byteRange: offset..<rawData.count
                 ))
+            }
+        } else if ipVersion == 6 && rawData.count >= offset + 40 {
+            proto = .ipv6
+            let ipStart = offset
+            let nextHeader = rawData[offset + 6]
+            let hopLimit = rawData[offset + 7]
+            src = formatIPv6(rawData.subdata(in: offset + 8..<offset + 24))
+            dst = formatIPv6(rawData.subdata(in: offset + 24..<offset + 40))
+
+            layers.append(DissectedLayer(
+                name: "Internet Protocol Version 6",
+                summary: "IPv6, Src: \(src), Dst: \(dst) (Next: \(nextHeader), Hop Limit: \(hopLimit))",
+                fields: [
+                    FieldDetail(name: "Version", value: "6", byteRange: ipStart..<ipStart + 1),
+                    FieldDetail(name: "Next Header", value: "\(nextHeader)", byteRange: ipStart + 6..<ipStart + 7),
+                    FieldDetail(name: "Hop Limit", value: "\(hopLimit)", byteRange: ipStart + 7..<ipStart + 8),
+                    FieldDetail(name: "Source Address", value: src, byteRange: ipStart + 8..<ipStart + 24),
+                    FieldDetail(name: "Destination Address", value: dst, byteRange: ipStart + 24..<ipStart + 40)
+                ],
+                byteRange: ipStart..<ipStart + 40
+            ))
+
+            offset += 40
+            if nextHeader == 6 && rawData.count >= offset + 20 { // TCP over IPv6
+                proto = .tcp
+                let srcPort = Int(rawData[offset]) << 8 | Int(rawData[offset + 1])
+                let dstPort = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
+                info = "IPv6 TCP \(srcPort) → \(dstPort)"
+                layers.append(DissectedLayer(name: "Transmission Control Protocol", summary: info, fields: [
+                    FieldDetail(name: "Source Port", value: "\(srcPort)", byteRange: offset..<offset + 2),
+                    FieldDetail(name: "Destination Port", value: "\(dstPort)", byteRange: offset + 2..<offset + 4)
+                ], byteRange: offset..<rawData.count))
+            } else if nextHeader == 17 && rawData.count >= offset + 8 { // UDP over IPv6
+                proto = .udp
+                let srcPort = Int(rawData[offset]) << 8 | Int(rawData[offset + 1])
+                let dstPort = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
+                info = "IPv6 UDP \(srcPort) → \(dstPort)"
+                layers.append(DissectedLayer(name: "User Datagram Protocol", summary: info, fields: [
+                    FieldDetail(name: "Source Port", value: "\(srcPort)", byteRange: offset..<offset + 2),
+                    FieldDetail(name: "Destination Port", value: "\(dstPort)", byteRange: offset + 2..<offset + 4)
+                ], byteRange: offset..<rawData.count))
             }
         }
 
@@ -311,8 +659,19 @@ public struct PacketDissector {
             info: info,
             rawData: rawData,
             layers: layers,
-            interface: interface
+            interface: interface,
+            expertInfo: expert,
+            countryFlag: geoFlag,
+            countryName: geoCountry,
+            asnInfo: geoAsn
         )
+    }
+
+    private static func isWebSocketFrame(payload: Data) -> Bool {
+        guard payload.count >= 2 else { return false }
+        let opcode = payload[0] & 0x0F
+        // Valid opcodes: 0x0 (cont), 0x1 (text), 0x2 (binary), 0x8 (close), 0x9 (ping), 0xA (pong)
+        return (opcode <= 0x02 || (opcode >= 0x08 && opcode <= 0x0A))
     }
 
     private static func formatMAC(_ data: Data) -> String {
@@ -323,16 +682,27 @@ public struct PacketDissector {
         return data.map { "\($0)" }.joined(separator: ".")
     }
 
+    private static func formatIPv6(_ data: Data) -> String {
+        guard data.count >= 16 else { return "::" }
+        var parts: [String] = []
+        for i in stride(from: 0, to: 16, by: 2) {
+            let val = UInt16(data[i]) << 8 | UInt16(data[i + 1])
+            parts.append(String(format: "%x", val))
+        }
+        return parts.joined(separator: ":")
+    }
+
     private static func extractSNI(payload: Data) -> String? {
         guard payload.count > 43 else { return nil }
-        for i in 40..<(payload.count - 5) {
+        for i in 40..<(payload.count - 9) {
             if payload[i] == 0x00 && payload[i + 1] == 0x00 {
                 let extLen = Int(payload[i + 2]) << 8 | Int(payload[i + 3])
-                if i + 4 + extLen <= payload.count && extLen > 3 {
+                if i + 4 + extLen <= payload.count && extLen > 4 {
                     let nameLen = Int(payload[i + 7]) << 8 | Int(payload[i + 8])
-                    if i + 9 + nameLen <= payload.count {
+                    if nameLen > 0 && i + 9 + nameLen <= payload.count {
                         let nameData = payload.subdata(in: (i + 9)..<(i + 9 + nameLen))
-                        return String(data: nameData, encoding: .utf8)
+                        let sniStr = String(decoding: nameData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                        return sniStr.isEmpty ? nil : sniStr
                     }
                 }
             }
@@ -343,12 +713,16 @@ public struct PacketDissector {
     private static func extractDNSQueryName(rawData: Data, startOffset: Int) -> String {
         var idx = startOffset
         var parts: [String] = []
-        while idx < rawData.count {
+        var steps = 0
+        while idx < rawData.count && steps < 64 {
+            steps += 1
             let len = Int(rawData[idx])
             if len == 0 || (len & 0xC0) != 0 { break }
             idx += 1
             if idx + len <= rawData.count {
-                if let part = String(data: rawData.subdata(in: idx..<idx + len), encoding: .utf8) {
+                let partData = rawData.subdata(in: idx..<idx + len)
+                let part = String(decoding: partData, as: UTF8.self).filter { $0.isASCII && !$0.isNewline }
+                if !part.isEmpty {
                     parts.append(part)
                 }
                 idx += len

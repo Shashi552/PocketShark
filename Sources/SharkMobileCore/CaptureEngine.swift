@@ -8,15 +8,28 @@ public final class CaptureEngine: ObservableObject {
     @Published public var memoryUsageMB: Double = 0.0
     @Published public var selectedInterface: String = "All Interfaces"
     @Published public var maxMemoryMB: Double = 100.0 // Configurable up to 500MB
+    @Published public var threats: [ThreatEvent] = []
+    @Published public var securityFindings: [SecurityFinding] = []
+    @Published public var discoveredAssets: [DiscoveredHost] = []
+
+    // Tactical Systems Sub-Engines
+    public let threatDetector = ThreatDetector()
+    public let assetTopology = AssetTopology()
+    public let missionManager = TacticalMissionManager()
+    public let gpsManager = GPSManager()
+    public let biometricGuard = BiometricGuard()
 
     private var timer: Timer?
     private var packetCounter = 1
+    private var scanPortCounter = 20
 
     public init() {}
 
     public func startCapture() {
         guard !isCapturing else { return }
         isCapturing = true
+        gpsManager.startLocationServices()
+        missionManager.log(severity: "START", tag: "CAPTURE", message: "Live promiscuous capture activated on \(selectedInterface)")
 
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.simulatePacketArrival()
@@ -27,6 +40,8 @@ public final class CaptureEngine: ObservableObject {
         isCapturing = false
         timer?.invalidate()
         timer = nil
+        gpsManager.stopLocationServices()
+        missionManager.log(severity: "STOP", tag: "CAPTURE", message: "Promiscuous capture halted. Total: \(capturedCount) packets")
     }
 
     public func clear() {
@@ -35,18 +50,47 @@ public final class CaptureEngine: ObservableObject {
         droppedCount = 0
         memoryUsageMB = 0.0
         packetCounter = 1
+        threatDetector.clear()
+        threats.removeAll()
+        securityFindings.removeAll()
+        assetTopology.clear()
+        discoveredAssets.removeAll()
+        missionManager.log(severity: "CLEAR", tag: "SYS", message: "In-memory packet buffer and forensic state purged")
     }
 
     public func importPcap(data: Data) {
-        let parsed = PcapManager.readPcap(data: data)
+        let parsed = PcapManager.readAny(data: data)
         self.packets = parsed
         self.capturedCount = parsed.count
         self.packetCounter = parsed.count + 1
         updateMemoryMetrics()
+
+        for pkt in parsed {
+            let t = threatDetector.analyze(packet: pkt)
+            if !t.isEmpty { threats.append(contentsOf: t) }
+            let f = SecurityHunter.inspect(packet: pkt)
+            if !f.isEmpty { securityFindings.append(contentsOf: f) }
+            assetTopology.process(packet: pkt)
+        }
+        discoveredAssets = assetTopology.hosts
+        let cert = missionManager.certifyEvidence(fileName: "imported_capture.pcap", data: data, packetCount: parsed.count)
+        missionManager.log(severity: "IMPORT", tag: "VAULT", message: "Imported \(parsed.count) packets. SHA-256: \(cert.sha256Hash.prefix(12))...")
     }
 
     public func exportPcap() -> Data {
-        return PcapManager.writePcap(packets: packets)
+        let data = PcapManager.writePcap(packets: packets)
+        _ = missionManager.certifyEvidence(fileName: "export_\(missionManager.caseCodename).pcap", data: data, packetCount: packets.count)
+        return data
+    }
+
+    public func exportPcapNg() -> Data {
+        let data = PcapManager.writePcapNg(packets: packets)
+        _ = missionManager.certifyEvidence(fileName: "export_\(missionManager.caseCodename).pcapng", data: data, packetCount: packets.count)
+        return data
+    }
+
+    public func exportJsonForensics() -> Data {
+        return PcapManager.exportJsonDump(packets: packets)
     }
 
     private func simulatePacketArrival() {
@@ -58,12 +102,56 @@ public final class CaptureEngine: ObservableObject {
             return
         }
 
-        let record = PacketDissector.dissect(packetId: packetCounter, timestamp: now, rawData: raw, interface: iface)
+        let loc = gpsManager.stampPacketLocation()
+        let recordRaw = PacketDissector.dissect(packetId: packetCounter, timestamp: now, rawData: raw, interface: iface)
+        let record = PacketRecord(
+            id: recordRaw.id,
+            timestamp: recordRaw.timestamp,
+            source: recordRaw.source,
+            destination: recordRaw.destination,
+            protocolType: recordRaw.protocolType,
+            length: recordRaw.length,
+            info: recordRaw.info,
+            rawData: recordRaw.rawData,
+            layers: recordRaw.layers,
+            interface: recordRaw.interface,
+            expertInfo: recordRaw.expertInfo,
+            geoCoord: loc,
+            countryFlag: recordRaw.countryFlag,
+            countryName: recordRaw.countryName,
+            asnInfo: recordRaw.asnInfo
+        )
         packetCounter += 1
 
         packets.append(record)
         capturedCount += 1
         updateMemoryMetrics()
+
+        // Real-time threat & security intelligence
+        let newThreats = threatDetector.analyze(packet: record)
+        if !newThreats.isEmpty {
+            threats.append(contentsOf: newThreats)
+            for t in newThreats {
+                missionManager.log(severity: t.severity.rawValue, tag: "THREAT", message: "[\(t.type.rawValue)] \(t.title) (\(t.attackerIP))", packetId: record.id)
+            }
+        }
+
+        let newFindings = SecurityHunter.inspect(packet: record)
+        if !newFindings.isEmpty {
+            securityFindings.append(contentsOf: newFindings)
+            for f in newFindings {
+                missionManager.log(severity: f.severity.rawValue, tag: "HUNTER", message: "[\(f.category.rawValue)] \(f.title): \(f.secretPreview)", packetId: record.id)
+            }
+        }
+
+        assetTopology.process(packet: record)
+        discoveredAssets = assetTopology.hosts
+
+        // Periodically certify live evidence
+        if capturedCount > 0 && capturedCount % 50 == 0 {
+            let pcapData = PcapManager.writePcap(packets: packets)
+            _ = missionManager.certifyEvidence(fileName: "live_checkpoint_\(capturedCount).pcap", data: pcapData, packetCount: packets.count)
+        }
 
         // Evict oldest only if exceeding user-configured memory threshold
         while memoryUsageMB > maxMemoryMB && !packets.isEmpty {
@@ -80,31 +168,31 @@ public final class CaptureEngine: ObservableObject {
 
     private func generateDiversePacket() -> (Data, String) {
         let localIP = "192.168.1.\(Int.random(in: 101...150))"
-        let r = Int.random(in: 0..<11)
+        let r = Int.random(in: 0..<16)
         switch r {
         case 0:
-            // HTTP Request to Cloudflare / Enterprise Web Server
+            // HTTP Request to Cloudflare
             let cloudflareIP = "104.21.48.91"
-            let payload = "GET /api/v1/status HTTP/1.1\r\nHost: api.cloudflare.com\r\nUser-Agent: SharkMobile/1.0 (iPhone; iOS 18)\r\nAccept: application/json\r\n\r\n".data(using: .utf8)!
+            let payload = "GET /api/v1/status HTTP/1.1\r\nHost: api.cloudflare.com\r\nUser-Agent: SharkMobile/2.0 (iPhone; iOS 18)\r\nAccept: application/json\r\n\r\n".data(using: .utf8)!
             return (createIPv4TCPPacket(srcIP: localIP, dstIP: cloudflareIP, srcPort: 51200 + Int.random(in: 1...1000), dstPort: 80, flags: 0x18, payload: payload), "en0 (Wi-Fi)")
         case 1:
-            // TLS Client Hello with SNI to Cloudflare
+            // TLS Client Hello to Cloudflare
             return (createTLSClientHelloPacket(srcIP: localIP, dstIP: "1.1.1.1", sni: "cloudflare.com"), "en0 (Wi-Fi)")
         case 2:
-            // TLS Client Hello with SNI to Apple iCloud Gateway
+            // TLS Client Hello to Apple iCloud Gateway
             return (createTLSClientHelloPacket(srcIP: localIP, dstIP: "17.253.144.10", sni: "gateway.icloud.com"), "en0 (Wi-Fi)")
         case 3:
-            // DNS Query to Cloudflare / Google DNS
-            let domains = ["apple.com", "gateway.icloud.com", "cloudflare.com", "google.com", "github.com", "openai.com", "aws.amazon.com", "api.telegram.org"]
+            // DNS Query to Google DNS / Cloudflare
+            let domains = ["apple.com", "gateway.icloud.com", "cloudflare.com", "google.com", "github.com", "openai.com", "aws.amazon.com"]
             let d = domains[Int.random(in: 0..<domains.count)]
             let dnsServer = Bool.random() ? "1.1.1.1" : "8.8.8.8"
             return (createIPv4UDPPacket(srcIP: localIP, dstIP: dnsServer, srcPort: 54321 + Int.random(in: 1...100), dstPort: 53, domain: d), "en0 (Wi-Fi)")
         case 4:
-            // QUIC / HTTP3 UDP Transport to Google Cloud
+            // QUIC / HTTP3 Handshake to Google Cloud
             let quicPayload = Data([0xC0, 0x00, 0x00, 0x01, 0x08, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
             return (createIPv4UDPPacketWithPayload(srcIP: localIP, dstIP: "142.250.190.46", srcPort: 58210, dstPort: 443, payload: quicPayload), "en0 (Wi-Fi)")
         case 5:
-            // Bluetooth Low Energy (AirPods Proximity Pairing Advertisement)
+            // Bluetooth Low Energy (AirPods Proximity Pairing)
             return (createBleFrame(mfgData: Data([0x4C, 0x00, 0x07, 0x19, 0x01, 0x02, 0x20])), "ble0 (BLE Radio)")
         case 6:
             // Bluetooth Low Energy (AirTag / FindMy Tracker Beacon)
@@ -113,16 +201,37 @@ public final class CaptureEngine: ObservableObject {
             // ARP Request on LAN Gateway
             return (createARPPacket(senderIP: "192.168.1.1", targetIP: localIP), "en0 (Wi-Fi)")
         case 8:
-            // SSDP Multicast (UPnP Device Discovery)
+            // SSDP Multicast (UPnP Discovery)
             let ssdpPayload = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n".data(using: .utf8)!
             return (createIPv4UDPPacketWithPayload(srcIP: localIP, dstIP: "239.255.255.250", srcPort: 49200, dstPort: 1900, payload: ssdpPayload), "en0 (Wi-Fi)")
         case 9:
-            // Loopback IPC Traffic (Local daemon / agent communications)
+            // Loopback IPC Traffic
             return (createIPv4TCPPacket(srcIP: "127.0.0.1", dstIP: "127.0.0.1", srcPort: 8990, dstPort: 58012, flags: 0x18, payload: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\",\"service\":\"sharkmobile-agent\"}".data(using: .utf8)!), "lo0 (Loopback)")
+        case 10:
+            // Security Hunter Pillar: Cleartext Basic Auth in POST Body
+            let leakPayload = "POST /v1/auth/login HTTP/1.1\r\nHost: internal-auth.lan\r\nAuthorization: Basic YWRtaW46U3VwZXJTZWNyZXRQYXNzIQ==\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nusername=admin&password=P@ssw0rd2026!&authToken=sample_test_auth_token".data(using: .utf8)!
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "192.168.1.50", srcPort: 53100, dstPort: 80, flags: 0x18, payload: leakPayload), "en0 (Wi-Fi)")
+        case 11:
+            // Security Hunter Pillar: Exposed Session Token & Secret Key
+            let tokenPayload = "POST /webhook HTTP/1.1\r\nHost: api.partner-sync.com\r\nContent-Type: application/json\r\n\r\n{\"sessionToken\":\"sample_test_token_abcdef123456\",\"secretKey\":\"sample_secret_key_mock_test\"}".data(using: .utf8)!
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "104.21.48.91", srcPort: 54200, dstPort: 80, flags: 0x18, payload: tokenPayload), "en0 (Wi-Fi)")
+        case 12:
+            // Deep L7 Dissector Pillar: WebSocket Text Frame
+            let wsPayload = createWebSocketTextFrame(text: "{\"event\":\"telemetry\",\"coords\":{\"lat\":37.7749,\"lon\":-122.4194},\"status\":\"locked\"}")
+            return (createIPv4TCPPacket(srcIP: localIP, dstIP: "104.21.48.91", srcPort: 59300, dstPort: 8080, flags: 0x18, payload: wsPayload), "en0 (Wi-Fi)")
+        case 13:
+            // Deep L7 Dissector Pillar: mDNS / Bonjour Apple TV Announcement
+            let mdnsPayload = createMDNSPacket(service: "_airplay._tcp.local")
+            return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.180", dstIP: "224.0.0.251", srcPort: 5353, dstPort: 5353, payload: mdnsPayload), "en0 (Wi-Fi)")
+        case 14:
+            // Deep L7 Dissector Pillar: DHCPv4 ACK Lease
+            let dhcpAck = createDHCPPacket(msgType: 5, clientIP: localIP, serverIP: "192.168.1.1")
+            return (createIPv4UDPPacketWithPayload(srcIP: "192.168.1.1", dstIP: localIP, srcPort: 67, dstPort: 68, payload: dhcpAck), "en0 (Wi-Fi)")
         default:
-            // Cellular PDP traffic to Apple Push Notification Service (APNs) / CloudFront
-            let cellularIP = "10.142.\(Int.random(in: 10...90)).\(Int.random(in: 1...254))"
-            return (createIPv4TCPPacket(srcIP: cellularIP, dstIP: "17.253.144.10", srcPort: 59124, dstPort: 443, flags: 0x10, payload: Data(repeating: 0x17, count: 64)), "pdp_ip0 (Cellular)")
+            // Threat Detection Engine: Port Scan Probe
+            let scanPort = scanPortCounter
+            scanPortCounter = scanPortCounter >= 85 ? 20 : scanPortCounter + 1
+            return (createIPv4TCPPacket(srcIP: "198.51.100.42", dstIP: localIP, srcPort: 48991, dstPort: scanPort, flags: 0x02, payload: Data()), "en0 (Wi-Fi)")
         }
     }
 
@@ -229,6 +338,73 @@ public final class CaptureEngine: ObservableObject {
         tlsPayload[4] = UInt8(recLen & 0xFF)
 
         return createIPv4TCPPacket(srcIP: srcIP, dstIP: dstIP, srcPort: 49812, dstPort: 443, flags: 0x18, payload: tlsPayload)
+    }
+
+    private func createWebSocketTextFrame(text: String) -> Data {
+        let textBytes = [UInt8](text.utf8)
+        var frame = Data([0x81]) // FIN=1, Opcode=1 (Text)
+        let maskKey: [UInt8] = [0x12, 0x34, 0x56, 0x78]
+
+        if textBytes.count <= 125 {
+            frame.append(0x80 | UInt8(textBytes.count)) // Mask=1
+        } else {
+            frame.append(contentsOf: [UInt8(0x80 | 126), UInt8(textBytes.count >> 8), UInt8(textBytes.count & 0xFF)])
+        }
+        frame.append(contentsOf: maskKey)
+
+        var masked = textBytes
+        for i in 0..<masked.count {
+            masked[i] ^= maskKey[i % 4]
+        }
+        frame.append(contentsOf: masked)
+        return frame
+    }
+
+    private func createMDNSPacket(service: String) -> Data {
+        var d = Data([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        for part in service.components(separatedBy: ".") {
+            d.append(UInt8(part.count))
+            d.append(part.data(using: .utf8)!)
+        }
+        d.append(contentsOf: [0x00, 0x00, 0x0C, 0x00, 0x01]) // PTR IN
+        return d
+    }
+
+    private func createDHCPPacket(msgType: UInt8, clientIP: String, serverIP: String) -> Data {
+        var d = Data(repeating: 0, count: 240)
+        d[0] = 0x02 // BootReply
+        d[1] = 0x01 // Ethernet
+        d[2] = 0x06 // Len 6
+        d[4] = 0x39; d[5] = 0x03; d[6] = 0xF3; d[7] = 0x26 // xid
+        let clientBytes = parseIPv4Bytes(clientIP)
+        if clientBytes.count == 4 {
+            d[16] = clientBytes[0]; d[17] = clientBytes[1]; d[18] = clientBytes[2]; d[19] = clientBytes[3]
+        }
+        let srvBytes = parseIPv4Bytes(serverIP)
+        if srvBytes.count == 4 {
+            d[20] = srvBytes[0]; d[21] = srvBytes[1]; d[22] = srvBytes[2]; d[23] = srvBytes[3]
+        }
+        // Magic cookie 0x63 0x82 0x53 0x63 at byte 236
+        d[236] = 0x63; d[237] = 0x82; d[238] = 0x53; d[239] = 0x63
+
+        // Options:
+        // Opt 53 (Msg Type)
+        d.append(contentsOf: [53, 1, msgType])
+        // Opt 1 (Subnet mask)
+        d.append(contentsOf: [1, 4, 255, 255, 255, 0])
+        // Opt 3 (Router)
+        d.append(contentsOf: [3, 4, 192, 168, 1, 1])
+        // Opt 6 (DNS)
+        d.append(contentsOf: [6, 4, 1, 1, 1, 1])
+        // Opt 12 (Host name)
+        let nameBytes = "Tactical-iPhone-Field".data(using: .utf8)!
+        d.append(contentsOf: [12, UInt8(nameBytes.count)])
+        d.append(nameBytes)
+        // Opt 51 (Lease 86400s)
+        d.append(contentsOf: [51, 4, 0x00, 0x01, 0x51, 0x80])
+        // Opt 255 (End)
+        d.append(255)
+        return d
     }
 
     private func parseIPv4Bytes(_ ipStr: String) -> [UInt8] {
