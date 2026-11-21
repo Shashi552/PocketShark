@@ -211,7 +211,7 @@ public final class BleAirspaceCapture: NSObject, @unchecked Sendable {
         super.init()
     }
 
-    public func start() {
+    public func start(enableVirtualFallback: Bool = false) {
         guard !isScanning else { return }
         isScanning = true
 
@@ -235,7 +235,9 @@ public final class BleAirspaceCapture: NSObject, @unchecked Sendable {
         }
         #endif
 
-        startVirtualAirspaceFallback()
+        if enableVirtualFallback {
+            startVirtualAirspaceFallback()
+        }
     }
 
     public func stop() {
@@ -437,7 +439,7 @@ public final class OmniSocketCapture: @unchecked Sendable {
         stop()
     }
 
-    public func start(interfaceTag: String = "en0 (Wi-Fi)") {
+    public func start(interfaceTag: String = "en0 (Wi-Fi)", enableActiveProber: Bool = false) {
         guard !isListening else { return }
         self.isListening = true
         self.activeInterfaceTag = interfaceTag
@@ -445,7 +447,9 @@ public final class OmniSocketCapture: @unchecked Sendable {
         setupMdnsTap()
         setupSsdpTap()
         setupLlmnrTap()
-        startActiveNetworkProber()
+        if enableActiveProber {
+            startActiveNetworkProber()
+        }
     }
 
     public func stop() {
@@ -631,7 +635,7 @@ public final class OmniSocketCapture: @unchecked Sendable {
         sendUDP(payload: llmnrPayload, dstIP: "224.0.0.252", dstPort: 5355)
     }
 
-    public func performActiveHttpProbe(urlStr: String = "http://captive.apple.com/hotspot-detect.html") {
+    public func performActiveHttpProbe(urlStr: String = "http://captive.apple.com/hotspot-detect.html", injectSyntheticFrames: Bool = false) {
         guard let url = URL(string: urlStr) else { return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 2.0
@@ -639,6 +643,7 @@ public final class OmniSocketCapture: @unchecked Sendable {
 
         let task = URLSession.shared.dataTask(with: req) { [weak self] data, response, _ in
             guard let self = self, self.isListening else { return }
+            guard injectSyntheticFrames else { return }
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
             let bodyText = data != nil ? String(decoding: data!.prefix(64), as: UTF8.self) : "Success"
             let httpResponsePayload = Data("HTTP/1.1 \(statusCode) OK\r\nContent-Type: text/html\r\nServer: Apple-CDN\r\nContent-Length: \(bodyText.utf8.count)\r\n\r\n\(bodyText)".utf8)
@@ -1016,9 +1021,8 @@ public final class RealCapturePipeline: @unchecked Sendable {
         switch mode {
         case .liveHardware:
             bpfCapture.start(interface: interface)
-            localSocketCapture.start(interfaceTag: resolvedInterfaceTag)
-            bleCapture.start()
-            cellularEngine.start()
+            localSocketCapture.start(interfaceTag: resolvedInterfaceTag, enableActiveProber: false)
+            bleCapture.start(enableVirtualFallback: false)
             localProxyServer.start()
             packetTunnelBridge.start()
 
@@ -1026,19 +1030,22 @@ public final class RealCapturePipeline: @unchecked Sendable {
             bpfCapture.start(interface: interface)
 
         case .localSocketTap:
-            localSocketCapture.start(interfaceTag: resolvedInterfaceTag)
+            localSocketCapture.start(interfaceTag: resolvedInterfaceTag, enableActiveProber: false)
 
         case .cellularBridge:
             cellularEngine.start()
 
         case .bleAirspace:
-            bleCapture.start()
+            bleCapture.start(enableVirtualFallback: false)
 
         case .localProxyTap:
             localProxyServer.start()
 
         case .demoSimulated:
-            break
+            cellularEngine.start()
+            bleCapture.start(enableVirtualFallback: true)
+            localSocketCapture.start(interfaceTag: resolvedInterfaceTag, enableActiveProber: true)
+            packetTunnelBridge.start()
         }
     }
 

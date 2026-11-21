@@ -37,6 +37,12 @@ jobs:
             -o build/Payload/SharkMobile.app/SharkMobile \
             Sources/SharkMobileCore/*.swift
 
+          # Copy Brand Icon Assets
+          cp Assets/AppIcon.png build/Payload/SharkMobile.app/AppIcon60x60@2x.png
+          cp Assets/AppIcon.png build/Payload/SharkMobile.app/AppIcon60x60@3x.png
+          cp Assets/AppIcon.png build/Payload/SharkMobile.app/AppIcon76x76@2x~ipad.png
+          cp Assets/AppIcon.png build/Payload/SharkMobile.app/iTunesArtwork@2x
+
           # Generate Info.plist
           cat << 'EOF' > build/Payload/SharkMobile.app/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
@@ -46,9 +52,13 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>SharkMobile</string>
               <key>CFBundleIdentifier</key>
-              <string>com.shashank.sharkmobile</string>
+              <string>com.shashank.aethershark</string>
               <key>CFBundleName</key>
-              <string>SharkMobile</string>
+              <string>AetherShark</string>
+              <key>CFBundleDisplayName</key>
+              <string>AetherShark</string>
+              <key>CFBundleIconName</key>
+              <string>AppIcon</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>

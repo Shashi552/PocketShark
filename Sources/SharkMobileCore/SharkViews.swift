@@ -4,6 +4,76 @@ import SwiftUI
 import UIKit
 #endif
 
+// MARK: - Brand Icon & Logo Component
+public struct AetherSharkLogoView: View {
+    public var size: CGFloat = 28
+
+    public init(size: CGFloat = 28) {
+        self.size = size
+    }
+
+    public var body: some View {
+        ZStack {
+            // Background dark squircle
+            RoundedRectangle(cornerRadius: size * 0.24)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(hex: "#0B101B"), Color(hex: "#04070D")],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: size * 0.24)
+                        .stroke(
+                            LinearGradient(
+                                colors: [Color(hex: "#00F0FF").opacity(0.85), Color(hex: "#0A84FF").opacity(0.35)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+
+            // Sonar radar rings
+            Circle()
+                .stroke(Color(hex: "#00F0FF").opacity(0.22), lineWidth: 0.8)
+                .frame(width: size * 0.72, height: size * 0.72)
+
+            Circle()
+                .stroke(Color(hex: "#00F0FF").opacity(0.4), lineWidth: 0.8)
+                .frame(width: size * 0.44, height: size * 0.44)
+
+            // Geometric Shark Fin
+            Path { p in
+                let w = size
+                let h = size
+                p.move(to: CGPoint(x: w * 0.28, y: h * 0.76))
+                p.addCurve(
+                    to: CGPoint(x: w * 0.76, y: h * 0.22),
+                    control1: CGPoint(x: w * 0.38, y: h * 0.52),
+                    control2: CGPoint(x: w * 0.54, y: h * 0.30)
+                )
+                p.addCurve(
+                    to: CGPoint(x: w * 0.62, y: h * 0.76),
+                    control1: CGPoint(x: w * 0.68, y: h * 0.48),
+                    control2: CGPoint(x: w * 0.66, y: h * 0.66)
+                )
+                p.closeSubpath()
+            }
+            .fill(
+                LinearGradient(
+                    colors: [Color(hex: "#00F0FF"), Color(hex: "#0A84FF")],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .shadow(color: Color(hex: "#00F0FF").opacity(0.65), radius: 3, x: 0, y: 0)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 // MARK: - Root Tab View: Tactical Mission Command
 public struct SharkMobileMainView: View {
     @StateObject private var engine = CaptureEngine()
@@ -135,6 +205,22 @@ public struct SnifferDashboardView: View {
             VStack(spacing: 0) {
                 // Top Control & Interface Strip
                 VStack(spacing: 6) {
+                    // Brand Identity Header
+                    HStack(spacing: 8) {
+                        AetherSharkLogoView(size: 26)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("AETHERSHARK")
+                                .font(.system(size: 13, weight: .black, design: .monospaced))
+                                .foregroundColor(Color(hex: "#00F0FF"))
+                            Text("LIVE AIRSPACE & PACKET FORENSICS")
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.top, 4)
+
                     HStack(spacing: 8) {
                         // Start / Stop Capture
                         Button(action: {
@@ -341,7 +427,7 @@ public struct SnifferDashboardView: View {
                 .padding(.vertical, 5)
                 .background(Color.secondary.opacity(0.08))
             }
-            .navigationTitle("SharkMobile: Command")
+            .navigationTitle("AetherShark")
             .applyPlatformNavigationInline()
             .sheet(item: $inspectedPacket) { packet in
                 PacketInspectorModalView(packet: packet, allPackets: engine.packets) {
