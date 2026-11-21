@@ -485,7 +485,7 @@ public final class LocalSocketCapture: @unchecked Sendable {
         }
     }
 
-    private func createMdnsDiscoveryQuery() -> Data {
+    public func createMdnsDiscoveryQuery() -> Data {
         // Query for _services._dns-sd._udp.local (PTR IN)
         var d = Data([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
         let parts = ["_services", "_dns-sd", "_udp", "local"]
@@ -498,7 +498,7 @@ public final class LocalSocketCapture: @unchecked Sendable {
         return d
     }
 
-    private func buildEthernetIPv4UDP(
+    public func buildEthernetIPv4UDP(
         srcIP: String, dstIP: String,
         srcPort: Int, dstPort: Int,
         payload: Data
