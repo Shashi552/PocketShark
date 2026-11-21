@@ -62,7 +62,7 @@ public struct ThreatEvent: Identifiable, Hashable, Codable {
         remediationAdvice: String
     ) {
         self.id = id
-        self.timestamp = timestamp
+        self.timestamp = (timestamp.isFinite && timestamp >= 0) ? timestamp : Date().timeIntervalSince1970
         self.type = type
         self.severity = severity
         self.title = title
@@ -73,14 +73,24 @@ public struct ThreatEvent: Identifiable, Hashable, Codable {
         self.mitreTactic = mitreTactic
         self.remediationAdvice = remediationAdvice
     }
+
+    // Resilience & Backwards-Compatibility Accessors
+    public var details: String { description }
+    public var source: String { attackerIP }
+    public var packetId: Int { evidencePacketId }
 }
 
+@MainActor
 public final class ThreatDetector: ObservableObject {
     @Published public var threats: [ThreatEvent] = []
     @Published public var criticalCount: Int = 0
     @Published public var highCount: Int = 0
     @Published public var mediumCount: Int = 0
     @Published public var lowCount: Int = 0
+
+    private let maxThreatsCount: Int = 500
+    private let maxTrackedIPs: Int = 200
+    private let maxArpEntries: Int = 500
 
     // State Tracking
     private var arpTable: [String: (mac: String, timestamp: Double)] = [:]
@@ -162,6 +172,9 @@ public final class ThreatDetector: ObservableObject {
             case .low: lowCount += 1
             }
         }
+        if threats.count > maxThreatsCount {
+            threats.removeLast(threats.count - maxThreatsCount)
+        }
 
         return newThreats
     }
@@ -179,6 +192,10 @@ public final class ThreatDetector: ObservableObject {
         }
 
         guard !senderIP.isEmpty && !senderMAC.isEmpty && senderIP != "0.0.0.0" else { return nil }
+
+        if arpTable.count >= maxArpEntries && arpTable[senderIP] == nil {
+            arpTable.removeAll()
+        }
 
         if isReply, let existing = arpTable[senderIP] {
             if existing.mac != senderMAC {
@@ -209,6 +226,10 @@ public final class ThreatDetector: ObservableObject {
         // Look for DHCP Offer / ACK from a server (port 67 -> 68)
         let isServerToClient = packet.info.contains("67") && packet.info.contains("68")
         guard isServerToClient || packet.info.contains("Offer") || packet.info.contains("ACK") else { return nil }
+
+        if knownDHCPServers.count > 50 {
+            knownDHCPServers.removeAll()
+        }
 
         let serverIP = packet.source
         if knownDHCPServers.isEmpty {
@@ -291,7 +312,18 @@ public final class ThreatDetector: ObservableObject {
         guard isSYN && !isACK && dstPort > 0 else { return nil }
 
         let src = packet.source
-        let now = packet.timestamp
+        let now = packet.timestamp.isFinite ? packet.timestamp : Date().timeIntervalSince1970
+
+        if portScanTracker.count >= maxTrackedIPs && portScanTracker[src] == nil {
+            // Prune expired IPs outside 15 second window
+            portScanTracker = portScanTracker.filter { _, history in
+                guard let latest = history.last else { return false }
+                return (now - latest.timestamp) <= 15.0
+            }
+            if portScanTracker.count >= maxTrackedIPs {
+                portScanTracker.removeAll()
+            }
+        }
 
         var history = portScanTracker[src] ?? []
         // Clean out older entries outside 15 second window

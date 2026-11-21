@@ -39,9 +39,11 @@ public struct MissionLogEntry: Identifiable, Hashable, Codable {
         packetId: Int? = nil
     ) {
         self.id = id
-        self.timestamp = timestamp
-        let secs = Int(timestamp)
-        let micros = Int((timestamp - Double(secs)) * 1_000_000)
+        let safeTimestamp = (timestamp.isFinite && !timestamp.isNaN && timestamp >= 0) ? min(timestamp, Double(UInt32.max)) : 0.0
+        self.timestamp = safeTimestamp
+        let secs = Int(safeTimestamp)
+        let remainder = max(0.0, safeTimestamp - Double(secs))
+        let micros = min(999_999, max(0, Int(remainder * 1_000_000)))
         self.timeString = String(format: "%d.%06d", secs, micros)
         self.severity = severity
         self.tag = tag
@@ -87,6 +89,7 @@ public struct ChainOfCustodyRecord: Identifiable, Hashable, Codable {
     }
 }
 
+@MainActor
 public final class TacticalMissionManager: ObservableObject {
     @Published public var caseCodename: String = "OPERATION NEBULA SHIELD"
     @Published public var caseNumber: String = "CASE-2026-X89"
@@ -107,6 +110,9 @@ public final class TacticalMissionManager: ObservableObject {
     public func log(severity: String, tag: String, message: String, packetId: Int? = nil) {
         let entry = MissionLogEntry(severity: severity, tag: tag, message: message, packetId: packetId)
         incidentLogs.insert(entry, at: 0)
+        if incidentLogs.count > 1000 {
+            incidentLogs.removeLast(incidentLogs.count - 1000)
+        }
     }
 
     public func computeSHA256(data: Data) -> String {
@@ -135,6 +141,9 @@ public final class TacticalMissionManager: ObservableObject {
             sha256Hash: hash
         )
         custodyRecords.insert(record, at: 0)
+        if custodyRecords.count > 500 {
+            custodyRecords.removeLast(custodyRecords.count - 500)
+        }
         log(severity: "CUSTODY", tag: "EVIDENCE", message: "Cryptographically certified \(fileName) with SHA-256: \(hash.prefix(16))...")
         return record
     }

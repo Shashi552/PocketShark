@@ -31,6 +31,7 @@ public struct GeotaggedRadioRecord: Identifiable, Hashable, Codable {
     }
 }
 
+@MainActor
 public final class GPSManager: NSObject, ObservableObject {
     @Published public var currentCoordinate: GPSCoordinate?
     @Published public var isLocationActive: Bool = false
@@ -126,6 +127,9 @@ public final class GPSManager: NSObject, ObservableObject {
                 coordinate: coord
             )
             geotaggedRadios.insert(record, at: 0)
+            if geotaggedRadios.count > 500 {
+                geotaggedRadios.removeLast(geotaggedRadios.count - 500)
+            }
         }
     }
 
@@ -139,15 +143,42 @@ public final class GPSManager: NSObject, ObservableObject {
         let a = sin(dLat / 2.0) * sin(dLat / 2.0) +
                 cos(lat1) * cos(lat2) *
                 sin(dLon / 2.0) * sin(dLon / 2.0)
-        let c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
+        let c = 2.0 * atan2(sqrt(a), sqrt(max(0.0, 1.0 - a)))
         return r * c
     }
 }
 
 #if canImport(CoreLocation)
 extension GPSManager: CLLocationManagerDelegate {
+    public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        #if os(iOS) || os(macOS)
+        let status: CLAuthorizationStatus
+        if #available(iOS 14.0, macOS 11.0, *) {
+            status = manager.authorizationStatus
+        } else {
+            status = CLLocationManager.authorizationStatus()
+        }
+        DispatchQueue.main.async { [weak self] in
+            switch status {
+            case .denied, .restricted:
+                self?.isLocationActive = false
+                self?.locationStatusString = "Location Permission Denied (Running Synthetic Tactical Coordinates)"
+            case .authorizedAlways, .authorizedWhenInUse:
+                self?.isLocationActive = true
+                self?.locationStatusString = "Active GPS Lock (High Precision)"
+                manager.startUpdatingLocation()
+            case .notDetermined:
+                self?.locationStatusString = "GPS Standby (Awaiting Authorization)"
+            @unknown default:
+                break
+            }
+        }
+        #endif
+    }
+
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
+        guard loc.coordinate.latitude.isFinite && loc.coordinate.longitude.isFinite && !loc.coordinate.latitude.isNaN && !loc.coordinate.longitude.isNaN else { return }
 
         let newCoord = GPSCoordinate(
             latitude: loc.coordinate.latitude,

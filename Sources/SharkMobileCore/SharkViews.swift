@@ -96,7 +96,7 @@ public struct BiometricLockOverlayView: View {
                     guardEngine.authenticate { _ in }
                 }) {
                     HStack(spacing: 8) {
-                        Image(systemName: "faceid")
+                        Image(systemName: "lock.open.fill")
                         Text("Unlock with \(guardEngine.biometricTypeString)")
                     }
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
@@ -267,7 +267,7 @@ public struct SnifferDashboardView: View {
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                         .listRowBackground(Color(hex: packet.protocolType.colorHex).opacity(0.55))
                 }
-                .listStyle(.plain)
+                .listStyle(PlainListStyle())
 
                 Divider()
 
@@ -286,7 +286,7 @@ public struct SnifferDashboardView: View {
                 .background(Color.secondary.opacity(0.08))
             }
             .navigationTitle("SharkMobile: Command")
-            .navigationBarTitleDisplayMode(.inline)
+            .applyPlatformNavigationInline()
             .sheet(item: $inspectedPacket) { packet in
                 PacketInspectorModalView(packet: packet, allPackets: engine.packets) {
                     self.inspectedPacket = nil
@@ -301,7 +301,7 @@ public struct SnifferDashboardView: View {
                 FlowLadderSheetView(packets: engine.packets)
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .applyPlatformStackNavigation()
     }
 }
 
@@ -391,7 +391,6 @@ public struct PacketInspectorModalView: View {
                 if selectedTab == 0 {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
-                            // Expert Info Strip
                             if let exp = packet.expertInfo {
                                 HStack(spacing: 6) {
                                     Image(systemName: exp.severity.badgeIcon)
@@ -406,7 +405,6 @@ public struct PacketInspectorModalView: View {
                                 .cornerRadius(6)
                             }
 
-                            // GPS Stamping
                             if let geo = packet.geoCoord {
                                 HStack(spacing: 6) {
                                     Image(systemName: "location.fill")
@@ -507,11 +505,13 @@ public struct PacketInspectorModalView: View {
                 .background(Color.secondary.opacity(0.05))
             }
             .navigationTitle("Packet #\(packet.id) [\(packet.protocolType.rawValue)]")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(
-                trailing: Button("Done") { onClose() }
-                    .font(.system(size: 14, weight: .bold))
-            )
+            .applyPlatformNavigationInline()
+            .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") { onClose() }
+                        .font(.system(size: 14, weight: .bold))
+                }
+            }
         }
     }
 }
@@ -526,7 +526,6 @@ public struct TacticalMissionView: View {
     public var body: some View {
         NavigationView {
             List {
-                // Section: Operational Mission Header
                 Section(header: Text("Active Operation & Parameters")) {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -558,7 +557,6 @@ public struct TacticalMissionView: View {
                     .padding(.vertical, 4)
                 }
 
-                // Section: Cryptographic Chain-of-Custody (SHA-256)
                 Section(header: Text("Evidence Integrity (SHA-256 Seal)")) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -598,7 +596,6 @@ public struct TacticalMissionView: View {
                     .padding(.vertical, 4)
                 }
 
-                // Section: Live Tactical Incident Log
                 Section(header: Text("Tactical Incident Log (\(engine.missionManager.incidentLogs.count))")) {
                     ForEach(engine.missionManager.incidentLogs.prefix(30)) { item in
                         HStack(alignment: .top, spacing: 8) {
@@ -624,13 +621,13 @@ public struct TacticalMissionView: View {
                     }
                 }
             }
-            .listStyle(InsetGroupedListStyle())
+            .applyPlatformGroupedList()
             .navigationTitle("Mission HUD")
             .sheet(isPresented: $showingReportSheet) {
                 ForensicReportModalView(reportMarkdown: forensicReportText)
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .applyPlatformStackNavigation()
     }
 }
 
@@ -647,10 +644,14 @@ public struct ForensicReportModalView: View {
                     .padding()
             }
             .navigationTitle("Forensic Report")
-            .navigationBarItems(
-                leading: Button("Share") { shareReport() },
-                trailing: Button("Done") { presentationMode.wrappedValue.dismiss() }
-            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { presentationMode.wrappedValue.dismiss() }
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button("Share") { shareReport() }
+                }
+            }
         }
     }
 
@@ -673,7 +674,6 @@ public struct SecurityDashboardView: View {
     public var body: some View {
         NavigationView {
             List {
-                // Section: Threat Radar Alerts
                 Section(header: HStack {
                     Image(systemName: "flame.fill")
                         .foregroundColor(.red)
@@ -722,7 +722,6 @@ public struct SecurityDashboardView: View {
                     }
                 }
 
-                // Section: Security Hunter Findings
                 Section(header: HStack {
                     Image(systemName: "key.fill")
                         .foregroundColor(Color(hex: "#FFB000"))
@@ -774,10 +773,10 @@ public struct SecurityDashboardView: View {
                     }
                 }
             }
-            .listStyle(InsetGroupedListStyle())
+            .applyPlatformGroupedList()
             .navigationTitle("Threat Radar")
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .applyPlatformStackNavigation()
     }
 }
 
@@ -838,14 +837,14 @@ public struct TopologyAndFlowView: View {
                             }
                         }
                     }
-                    .listStyle(InsetGroupedListStyle())
+                    .applyPlatformGroupedList()
                 } else {
                     FlowLadderSheetView(packets: engine.packets)
                 }
             }
             .navigationTitle("Topology & Flow")
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .applyPlatformStackNavigation()
     }
 }
 
@@ -891,7 +890,6 @@ public struct FlowLadderSheetView: View {
 
                                 Divider()
 
-                                // Steps Ladder Timeline
                                 ForEach(ladder.steps.prefix(15)) { step in
                                     HStack(spacing: 8) {
                                         Text(String(format: "+%.1fms", step.relativeTimeMs))
@@ -913,9 +911,13 @@ public struct FlowLadderSheetView: View {
                         }
                     }
                 }
-                .listStyle(InsetGroupedListStyle())
+                .applyPlatformGroupedList()
                 .navigationTitle("Visual Flow Ladder")
-                .navigationBarItems(trailing: Button("Done") { presentationMode.wrappedValue.dismiss() })
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { presentationMode.wrappedValue.dismiss() }
+                    }
+                }
             }
         }
     }
@@ -930,7 +932,6 @@ public struct VaultAndRadiosView: View {
     public var body: some View {
         NavigationView {
             List {
-                // Section: GPS Geotagging & Wardriving
                 Section(header: Text("GPS Wardriving & Route Tracking")) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -951,7 +952,6 @@ public struct VaultAndRadiosView: View {
                     .padding(.vertical, 2)
                 }
 
-                // Section: PCAP & PCAP-NG Vault Export
                 Section(header: Text("PCAP-NG Vault & Sharing")) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -982,7 +982,6 @@ public struct VaultAndRadiosView: View {
                     }
                 }
 
-                // Section: Biometric Lockdown
                 Section(header: Text("Biometric Security Guard")) {
                     Button(action: { engine.biometricGuard.lockImmediately() }) {
                         HStack {
@@ -995,10 +994,10 @@ public struct VaultAndRadiosView: View {
                     }
                 }
             }
-            .listStyle(InsetGroupedListStyle())
+            .applyPlatformGroupedList()
             .navigationTitle("Vault & GPS")
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .applyPlatformStackNavigation()
     }
 
     private func exportAndShare(isNg: Bool) {
@@ -1009,8 +1008,13 @@ public struct VaultAndRadiosView: View {
 
         #if canImport(UIKit)
         let av = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let root = windowScene.windows.first?.rootViewController {
+        if let windowScene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+           let root = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController ?? windowScene.windows.first?.rootViewController {
+            if let popover = av.popoverPresentationController {
+                popover.sourceView = root.view
+                popover.sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
             root.present(av, animated: true)
         }
         #endif
@@ -1048,51 +1052,69 @@ public struct PacketRowView: View {
     }
 }
 
-// MARK: - Hex Dump View
+// MARK: - Hex Dump View with Modular Subviews for Instant Compilation
 public struct HexDumpView: View {
     public let data: Data
     public let highlightRange: Range<Int>?
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
+            LazyVStack(alignment: .leading, spacing: 2) {
                 ForEach(0..<(data.count + 15) / 16, id: \.self) { row in
-                    let start = row * 16
-                    let end = min(start + 16, data.count)
-                    let rowData = data.subdata(in: start..<end)
-
-                    HStack(spacing: 6) {
-                        Text(String(format: "%04x", start))
-                            .foregroundColor(.secondary)
-
-                        HStack(spacing: 3) {
-                            ForEach(0..<16, id: \.self) { col in
-                                let idx = start + col
-                                if idx < data.count {
-                                    let byte = data[idx]
-                                    let isHighlighted = highlightRange?.contains(idx) ?? false
-                                    Text(String(format: "%02x", byte))
-                                        .foregroundColor(isHighlighted ? .accentColor : .primary)
-                                        .font(.system(size: 10, weight: isHighlighted ? .bold : .regular, design: .monospaced))
-                                } else {
-                                    Text("  ")
-                                }
-                            }
-                        }
-
-                        Text(formatAscii(rowData))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    .font(.system(size: 10, design: .monospaced))
+                    HexRowView(data: data, rowIndex: row, highlightRange: highlightRange)
                 }
             }
             .padding(8)
         }
     }
+}
+
+struct HexRowView: View {
+    let data: Data
+    let rowIndex: Int
+    let highlightRange: Range<Int>?
+
+    var body: some View {
+        let start = rowIndex * 16
+        let end = min(start + 16, data.count)
+        let rowData = data.subdata(in: start..<end)
+        HStack(spacing: 6) {
+            Text(String(format: "%04x", start))
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 3) {
+                ForEach(0..<16, id: \.self) { col in
+                    HexByteCell(data: data, byteIndex: start + col, highlightRange: highlightRange)
+                }
+            }
+
+            Text(formatAscii(rowData))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .font(.system(size: 10, design: .monospaced))
+    }
 
     private func formatAscii(_ d: Data) -> String {
         return d.map { (0x20...0x7E).contains($0) ? String(UnicodeScalar($0)) : "." }.joined()
+    }
+}
+
+struct HexByteCell: View {
+    let data: Data
+    let byteIndex: Int
+    let highlightRange: Range<Int>?
+
+    var body: some View {
+        if byteIndex < data.count {
+            let byte = data[byteIndex]
+            let isHighlighted = highlightRange?.contains(byteIndex) ?? false
+            Text(String(format: "%02x", byte))
+                .foregroundColor(isHighlighted ? .accentColor : .primary)
+                .font(.system(size: 10, weight: isHighlighted ? .bold : .regular, design: .monospaced))
+        } else {
+            Text("  ")
+        }
     }
 }
 
@@ -1119,8 +1141,39 @@ public struct FollowStreamView: View {
                 .padding()
             }
             .navigationTitle("Follow TCP Stream")
-            .navigationBarItems(trailing: Button("Done") { presentationMode.wrappedValue.dismiss() })
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { presentationMode.wrappedValue.dismiss() }
+                }
+            }
         }
+    }
+}
+
+// MARK: - Platform Compatibility Modifiers
+extension View {
+    func applyPlatformNavigationInline() -> some View {
+        #if os(iOS)
+        return self.navigationBarTitleDisplayMode(.inline)
+        #else
+        return self
+        #endif
+    }
+
+    func applyPlatformStackNavigation() -> some View {
+        #if os(iOS)
+        return self.navigationViewStyle(StackNavigationViewStyle())
+        #else
+        return self
+        #endif
+    }
+
+    func applyPlatformGroupedList() -> some View {
+        #if os(iOS)
+        return self.listStyle(InsetGroupedListStyle())
+        #else
+        return self.listStyle(PlainListStyle())
+        #endif
     }
 }
 

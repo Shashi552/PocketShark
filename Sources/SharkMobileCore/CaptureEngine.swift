@@ -1,5 +1,10 @@
 import Foundation
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
+@MainActor
 public final class CaptureEngine: ObservableObject {
     @Published public var packets: [PacketRecord] = []
     @Published public var isCapturing: Bool = false
@@ -19,11 +24,37 @@ public final class CaptureEngine: ObservableObject {
     public let gpsManager = GPSManager()
     public let biometricGuard = BiometricGuard()
 
+    public let maxPacketCapacity = 10_000
+    private var currentTotalRawBytes: Int = 0
     private var timer: Timer?
     private var packetCounter = 1
     private var scanPortCounter = 20
 
-    public init() {}
+    public init() {
+        #if canImport(UIKit)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
+        #endif
+    }
+
+    private func handleMemoryWarning() {
+        // High Jetsam Pressure: Prune 50% oldest packets immediately to prevent termination
+        let pruneCount = packets.count / 2
+        guard pruneCount > 0 else { return }
+        for i in 0..<pruneCount {
+            currentTotalRawBytes -= packets[i].rawData.count
+        }
+        packets.removeFirst(pruneCount)
+        droppedCount += pruneCount
+        currentTotalRawBytes = max(0, currentTotalRawBytes)
+        self.memoryUsageMB = Double(currentTotalRawBytes) / (1024.0 * 1024.0)
+        missionManager.log(severity: "WARN", tag: "JETSAM", message: "iOS Memory Pressure: Pruned \(pruneCount) packets to protect process.")
+    }
 
     public func startCapture() {
         guard !isCapturing else { return }
@@ -32,7 +63,10 @@ public final class CaptureEngine: ObservableObject {
         missionManager.log(severity: "START", tag: "CAPTURE", message: "Live promiscuous capture activated on \(selectedInterface)")
 
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            self?.simulatePacketArrival()
+            guard let strongSelf = self else { return }
+            DispatchQueue.main.async {
+                strongSelf.simulatePacketArrival()
+            }
         }
     }
 
@@ -48,6 +82,7 @@ public final class CaptureEngine: ObservableObject {
         packets.removeAll()
         capturedCount = 0
         droppedCount = 0
+        currentTotalRawBytes = 0
         memoryUsageMB = 0.0
         packetCounter = 1
         threatDetector.clear()
@@ -63,7 +98,8 @@ public final class CaptureEngine: ObservableObject {
         self.packets = parsed
         self.capturedCount = parsed.count
         self.packetCounter = parsed.count + 1
-        updateMemoryMetrics()
+        self.currentTotalRawBytes = parsed.reduce(0) { $0 + $1.rawData.count }
+        self.memoryUsageMB = Double(self.currentTotalRawBytes) / (1024.0 * 1024.0)
 
         for pkt in parsed {
             let t = threatDetector.analyze(packet: pkt)
@@ -72,7 +108,7 @@ public final class CaptureEngine: ObservableObject {
             if !f.isEmpty { securityFindings.append(contentsOf: f) }
             assetTopology.process(packet: pkt)
         }
-        discoveredAssets = assetTopology.hosts
+        discoveredAssets = assetTopology.assets
         let cert = missionManager.certifyEvidence(fileName: "imported_capture.pcap", data: data, packetCount: parsed.count)
         missionManager.log(severity: "IMPORT", tag: "VAULT", message: "Imported \(parsed.count) packets. SHA-256: \(cert.sha256Hash.prefix(12))...")
     }
@@ -93,7 +129,7 @@ public final class CaptureEngine: ObservableObject {
         return PcapManager.exportJsonDump(packets: packets)
     }
 
-    private func simulatePacketArrival() {
+    public func simulatePacketArrival() {
         let now = Date().timeIntervalSince1970
         let (raw, iface) = generateDiversePacket()
 
@@ -125,12 +161,16 @@ public final class CaptureEngine: ObservableObject {
 
         packets.append(record)
         capturedCount += 1
-        updateMemoryMetrics()
+        currentTotalRawBytes += record.rawData.count
+        self.memoryUsageMB = Double(currentTotalRawBytes) / (1024.0 * 1024.0)
 
         // Real-time threat & security intelligence
         let newThreats = threatDetector.analyze(packet: record)
         if !newThreats.isEmpty {
             threats.append(contentsOf: newThreats)
+            if threats.count > 500 {
+                threats.removeFirst(threats.count - 500)
+            }
             for t in newThreats {
                 missionManager.log(severity: t.severity.rawValue, tag: "THREAT", message: "[\(t.type.rawValue)] \(t.title) (\(t.attackerIP))", packetId: record.id)
             }
@@ -139,13 +179,16 @@ public final class CaptureEngine: ObservableObject {
         let newFindings = SecurityHunter.inspect(packet: record)
         if !newFindings.isEmpty {
             securityFindings.append(contentsOf: newFindings)
+            if securityFindings.count > 500 {
+                securityFindings.removeFirst(securityFindings.count - 500)
+            }
             for f in newFindings {
                 missionManager.log(severity: f.severity.rawValue, tag: "HUNTER", message: "[\(f.category.rawValue)] \(f.title): \(f.secretPreview)", packetId: record.id)
             }
         }
 
         assetTopology.process(packet: record)
-        discoveredAssets = assetTopology.hosts
+        discoveredAssets = assetTopology.assets
 
         // Periodically certify live evidence
         if capturedCount > 0 && capturedCount % 50 == 0 {
@@ -153,17 +196,33 @@ public final class CaptureEngine: ObservableObject {
             _ = missionManager.certifyEvidence(fileName: "live_checkpoint_\(capturedCount).pcap", data: pcapData, packetCount: packets.count)
         }
 
+        // FIFO buffer bound enforcement
+        if packets.count > maxPacketCapacity {
+            let overflow = packets.count - maxPacketCapacity
+            for i in 0..<overflow {
+                currentTotalRawBytes -= packets[i].rawData.count
+            }
+            packets.removeFirst(overflow)
+            droppedCount += overflow
+            currentTotalRawBytes = max(0, currentTotalRawBytes)
+            self.memoryUsageMB = Double(currentTotalRawBytes) / (1024.0 * 1024.0)
+        }
+
         // Evict oldest only if exceeding user-configured memory threshold
         while memoryUsageMB > maxMemoryMB && !packets.isEmpty {
-            packets.removeFirst()
-            droppedCount += 1
-            updateMemoryMetrics()
+            let evictBatch = min(50, packets.count)
+            for i in 0..<evictBatch {
+                currentTotalRawBytes -= packets[i].rawData.count
+            }
+            packets.removeFirst(evictBatch)
+            droppedCount += evictBatch
+            currentTotalRawBytes = max(0, currentTotalRawBytes)
+            self.memoryUsageMB = Double(currentTotalRawBytes) / (1024.0 * 1024.0)
         }
     }
 
     private func updateMemoryMetrics() {
-        let totalBytes = packets.reduce(0) { $0 + $1.rawData.count }
-        self.memoryUsageMB = Double(totalBytes) / (1024.0 * 1024.0)
+        self.memoryUsageMB = Double(max(0, currentTotalRawBytes)) / (1024.0 * 1024.0)
     }
 
     private func generateDiversePacket() -> (Data, String) {
@@ -173,7 +232,7 @@ public final class CaptureEngine: ObservableObject {
         case 0:
             // HTTP Request to Cloudflare
             let cloudflareIP = "104.21.48.91"
-            let payload = "GET /api/v1/status HTTP/1.1\r\nHost: api.cloudflare.com\r\nUser-Agent: SharkMobile/2.0 (iPhone; iOS 18)\r\nAccept: application/json\r\n\r\n".data(using: .utf8)!
+            let payload = Data("GET /api/v1/status HTTP/1.1\r\nHost: api.cloudflare.com\r\nUser-Agent: SharkMobile/2.0 (iPhone; iOS 18)\r\nAccept: application/json\r\n\r\n".utf8)
             return (createIPv4TCPPacket(srcIP: localIP, dstIP: cloudflareIP, srcPort: 51200 + Int.random(in: 1...1000), dstPort: 80, flags: 0x18, payload: payload), "en0 (Wi-Fi)")
         case 1:
             // TLS Client Hello to Cloudflare
@@ -202,18 +261,18 @@ public final class CaptureEngine: ObservableObject {
             return (createARPPacket(senderIP: "192.168.1.1", targetIP: localIP), "en0 (Wi-Fi)")
         case 8:
             // SSDP Multicast (UPnP Discovery)
-            let ssdpPayload = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n".data(using: .utf8)!
+            let ssdpPayload = Data("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n".utf8)
             return (createIPv4UDPPacketWithPayload(srcIP: localIP, dstIP: "239.255.255.250", srcPort: 49200, dstPort: 1900, payload: ssdpPayload), "en0 (Wi-Fi)")
         case 9:
             // Loopback IPC Traffic
-            return (createIPv4TCPPacket(srcIP: "127.0.0.1", dstIP: "127.0.0.1", srcPort: 8990, dstPort: 58012, flags: 0x18, payload: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\",\"service\":\"sharkmobile-agent\"}".data(using: .utf8)!), "lo0 (Loopback)")
+            return (createIPv4TCPPacket(srcIP: "127.0.0.1", dstIP: "127.0.0.1", srcPort: 8990, dstPort: 58012, flags: 0x18, payload: Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\",\"service\":\"sharkmobile-agent\"}".utf8)), "lo0 (Loopback)")
         case 10:
             // Security Hunter Pillar: Cleartext Basic Auth in POST Body
-            let leakPayload = "POST /v1/auth/login HTTP/1.1\r\nHost: internal-auth.lan\r\nAuthorization: Basic YWRtaW46U3VwZXJTZWNyZXRQYXNzIQ==\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nusername=admin&password=P@ssw0rd2026!&authToken=sample_test_auth_token".data(using: .utf8)!
+            let leakPayload = Data("POST /v1/auth/login HTTP/1.1\r\nHost: internal-auth.lan\r\nAuthorization: Basic YWRtaW46U3VwZXJTZWNyZXRQYXNzIQ==\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nusername=admin&password=P@ssw0rd2026!&authToken=sample_test_auth_token".utf8)
             return (createIPv4TCPPacket(srcIP: localIP, dstIP: "192.168.1.50", srcPort: 53100, dstPort: 80, flags: 0x18, payload: leakPayload), "en0 (Wi-Fi)")
         case 11:
             // Security Hunter Pillar: Exposed Session Token & Secret Key
-            let tokenPayload = "POST /webhook HTTP/1.1\r\nHost: api.partner-sync.com\r\nContent-Type: application/json\r\n\r\n{\"sessionToken\":\"sample_test_token_abcdef123456\",\"secretKey\":\"sample_secret_key_mock_test\"}".data(using: .utf8)!
+            let tokenPayload = Data("POST /webhook HTTP/1.1\r\nHost: api.partner-sync.com\r\nContent-Type: application/json\r\n\r\n{\"sessionToken\":\"sample_test_token_abcdef123456\",\"secretKey\":\"sample_secret_key_mock_test\"}".utf8)
             return (createIPv4TCPPacket(srcIP: localIP, dstIP: "104.21.48.91", srcPort: 54200, dstPort: 80, flags: 0x18, payload: tokenPayload), "en0 (Wi-Fi)")
         case 12:
             // Deep L7 Dissector Pillar: WebSocket Text Frame
@@ -284,8 +343,9 @@ public final class CaptureEngine: ObservableObject {
     private func createIPv4UDPPacket(srcIP: String, dstIP: String, srcPort: Int, dstPort: Int, domain: String) -> Data {
         var dns = Data([0xA1, 0xB2, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
         for part in domain.components(separatedBy: ".") {
-            dns.append(UInt8(part.count))
-            dns.append(part.data(using: .utf8)!)
+            let partData = Data(part.utf8)
+            dns.append(UInt8(min(partData.count, 63)))
+            dns.append(partData)
         }
         dns.append(contentsOf: [0x00, 0x00, 0x01, 0x00, 0x01])
         return createIPv4UDPPacketWithPayload(srcIP: srcIP, dstIP: dstIP, srcPort: srcPort, dstPort: dstPort, payload: dns)
@@ -320,7 +380,7 @@ public final class CaptureEngine: ObservableObject {
         tlsPayload.append(0x00)
         tlsPayload.append(contentsOf: [0x00, 0x02, 0x13, 0x01, 0x01, 0x00])
 
-        let sniBytes = sni.data(using: .utf8)!
+        let sniBytes = Data(sni.utf8)
         var extSni = Data([0x00, 0x00, 0x00, UInt8(sniBytes.count + 5), 0x00, UInt8(sniBytes.count + 3), 0x00, 0x00, UInt8(sniBytes.count)])
         extSni.append(sniBytes)
 
@@ -363,8 +423,9 @@ public final class CaptureEngine: ObservableObject {
     private func createMDNSPacket(service: String) -> Data {
         var d = Data([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
         for part in service.components(separatedBy: ".") {
-            d.append(UInt8(part.count))
-            d.append(part.data(using: .utf8)!)
+            let partData = Data(part.utf8)
+            d.append(UInt8(min(partData.count, 63)))
+            d.append(partData)
         }
         d.append(contentsOf: [0x00, 0x00, 0x0C, 0x00, 0x01]) // PTR IN
         return d
@@ -397,7 +458,7 @@ public final class CaptureEngine: ObservableObject {
         // Opt 6 (DNS)
         d.append(contentsOf: [6, 4, 1, 1, 1, 1])
         // Opt 12 (Host name)
-        let nameBytes = "Tactical-iPhone-Field".data(using: .utf8)!
+        let nameBytes = Data("Tactical-iPhone-Field".utf8)
         d.append(contentsOf: [12, UInt8(nameBytes.count)])
         d.append(nameBytes)
         // Opt 51 (Lease 86400s)

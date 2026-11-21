@@ -146,6 +146,9 @@ public struct OfflineGeoIP {
         }
 
         // 2. Binary search through embedded database
+        guard !database.isEmpty else {
+            return GeoIPLookupResult(ip: ipString, countryCode: "WAN", countryName: "Public Internet Host", flagEmoji: "🌐", asn: "AS-PUBLIC", organization: "Global Internet Route", isPrivate: false)
+        }
         var low = 0
         var high = database.count - 1
 
@@ -195,7 +198,15 @@ public struct OfflineGeoIP {
 
     private static func makeCIDR(ip: String, prefix: Int, cc: String, name: String, flag: String, asn: String, org: String) -> IPRangeEntry {
         let base = parseIPv4(ip) ?? 0
-        let mask = prefix == 0 ? 0 : (~0 as UInt32) << (32 - prefix)
+        let clampedPrefix = max(0, min(32, prefix))
+        let mask: UInt32
+        if clampedPrefix == 0 {
+            mask = 0
+        } else if clampedPrefix == 32 {
+            mask = 0xFFFFFFFF
+        } else {
+            mask = (~0 as UInt32) << (32 - clampedPrefix)
+        }
         let start = base & mask
         let end = start | ~mask
         return IPRangeEntry(startIP: start, endIP: end, countryCode: cc, countryName: name, flag: flag, asn: asn, org: org)

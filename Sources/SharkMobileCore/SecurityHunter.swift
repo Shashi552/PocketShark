@@ -103,20 +103,19 @@ public struct SecurityHunter {
     public static func inspect(packet: PacketRecord) -> [SecurityFinding] {
         var findings: [SecurityFinding] = []
 
-        // Extract lossy ASCII/UTF-8 representation of the payload safely
+        // Extract lossy ASCII/UTF-8 representation of the payload safely (capped to 16KB for inspection performance)
         guard packet.rawData.count > 0 else { return findings }
-        let rawBytes = [UInt8](packet.rawData)
-        var lossyString = ""
-        lossyString.reserveCapacity(packet.rawData.count)
-        for b in rawBytes {
-            if b >= 32 && b <= 126 {
-                lossyString.append(Character(UnicodeScalar(b)))
-            } else if b == 10 || b == 13 || b == 9 {
-                lossyString.append(Character(UnicodeScalar(b)))
+        let inspectedData = packet.rawData.prefix(16384)
+        var lossyChars = [Character]()
+        lossyChars.reserveCapacity(inspectedData.count)
+        for b in inspectedData {
+            if (b >= 32 && b <= 126) || b == 10 || b == 13 || b == 9 {
+                lossyChars.append(Character(UnicodeScalar(b)))
             } else {
-                lossyString.append(" ")
+                lossyChars.append(" ")
             }
         }
+        let lossyString = String(lossyChars)
 
         let fullRange = NSRange(location: 0, length: lossyString.utf16.count)
 
@@ -235,7 +234,7 @@ public struct SecurityHunter {
                             note = "Live active session token"
                         }
 
-                        let expStr = parsed.expiration != nil ? "\(parsed.expiration!)" : "Never"
+                        let expStr = parsed.expiration.map { "\($0)" } ?? "Never"
                         let maskedToken = String(token.prefix(16)) + "..." + String(token.suffix(10))
 
                         findings.append(SecurityFinding(
@@ -336,12 +335,14 @@ public struct SecurityHunter {
            let pDict = try? JSONSerialization.jsonObject(with: pData) as? [String: Any] {
             subject = pDict["sub"] as? String
             issuer = pDict["iss"] as? String
-            if let expVal = pDict["exp"] as? Double {
-                expiration = Date(timeIntervalSince1970: expVal)
-                isExpired = Date() > expiration!
-            } else if let expInt = pDict["exp"] as? Int {
-                expiration = Date(timeIntervalSince1970: Double(expInt))
-                isExpired = Date() > expiration!
+            if let expVal = pDict["exp"] as? Double, expVal.isFinite && !expVal.isNaN && expVal >= 0 {
+                let expDate = Date(timeIntervalSince1970: expVal)
+                expiration = expDate
+                isExpired = Date() > expDate
+            } else if let expInt = pDict["exp"] as? Int, expInt >= 0 {
+                let expDate = Date(timeIntervalSince1970: Double(expInt))
+                expiration = expDate
+                isExpired = Date() > expDate
             }
         }
 

@@ -3,6 +3,7 @@ import Foundation
 import LocalAuthentication
 #endif
 
+@MainActor
 public final class BiometricGuard: ObservableObject {
     @Published public var isLocked: Bool = false
     @Published public var isBiometricsAvailable: Bool = false

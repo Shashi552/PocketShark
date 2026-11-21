@@ -65,11 +65,13 @@ public struct InterfaceDetector {
                 var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 var mask = [CChar](repeating: 0, count: Int(NI_MAXHOST))
 
-                getnameinfo(ifa.ifa_addr, socklen_t(addr.pointee.sa_len),
+                let addrLen: socklen_t = addr.pointee.sa_len > 0 ? socklen_t(addr.pointee.sa_len) : (family == UInt8(AF_INET) ? socklen_t(MemoryLayout<sockaddr_in>.size) : socklen_t(MemoryLayout<sockaddr_in6>.size))
+                getnameinfo(ifa.ifa_addr, addrLen,
                             &host, socklen_t(host.count),
                             nil, 0, NI_NUMERICHOST)
                 if let netmask = ifa.ifa_netmask {
-                    getnameinfo(netmask, socklen_t(netmask.pointee.sa_len),
+                    let maskLen: socklen_t = netmask.pointee.sa_len > 0 ? socklen_t(netmask.pointee.sa_len) : (family == UInt8(AF_INET) ? socklen_t(MemoryLayout<sockaddr_in>.size) : socklen_t(MemoryLayout<sockaddr_in6>.size))
+                    getnameinfo(netmask, maskLen,
                                 &mask, socklen_t(mask.count),
                                 nil, 0, NI_NUMERICHOST)
                 }
@@ -140,6 +142,8 @@ public struct BleDiscoveredPeripheral: Identifiable, Hashable {
     }
 }
 
+#if canImport(CoreBluetooth)
+@MainActor
 public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
     @Published public var discoveredDevices: [BleDiscoveredPeripheral] = []
     @Published public var isScanning: Bool = false
@@ -168,17 +172,28 @@ public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralMana
         centralManager?.stopScan()
     }
 
-    public func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        switch central.state {
-        case .poweredOn: bluetoothState = "Powered On"
-        case .poweredOff: bluetoothState = "Powered Off"
-        case .unauthorized: bluetoothState = "Unauthorized"
-        case .unsupported: bluetoothState = "Unsupported"
-        default: bluetoothState = "Resetting"
+    nonisolated public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        let state = central.state
+        Task { @MainActor in
+            switch state {
+            case .poweredOn:
+                self.bluetoothState = "Powered On (Airspace Radio Active)"
+            case .poweredOff:
+                self.bluetoothState = "Powered Off (Bluetooth Disabled in iOS Settings)"
+                self.isScanning = false
+            case .unauthorized:
+                self.bluetoothState = "Unauthorized (Bluetooth Permission Denied)"
+                self.isScanning = false
+            case .unsupported:
+                self.bluetoothState = "Unsupported (No BLE Radio Present)"
+                self.isScanning = false
+            default:
+                self.bluetoothState = "Resetting / Standby"
+            }
         }
     }
 
-    public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+    nonisolated public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unnamed Peripheral"
         let uuidStr = peripheral.identifier.uuidString
 
@@ -214,11 +229,14 @@ public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralMana
             lastSeen: Date()
         )
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
             if let idx = self.discoveredDevices.firstIndex(where: { $0.id == uuidStr }) {
                 self.discoveredDevices[idx] = record
             } else {
                 self.discoveredDevices.append(record)
+                if self.discoveredDevices.count > 500 {
+                    self.discoveredDevices.removeFirst(self.discoveredDevices.count - 500)
+                }
             }
         }
     }
@@ -232,3 +250,4 @@ public final class BleAirspaceScanner: NSObject, ObservableObject, CBCentralMana
         ]
     }
 }
+#endif

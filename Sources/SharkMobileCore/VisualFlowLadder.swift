@@ -38,6 +38,9 @@ public struct TCPConversationLadder: Identifiable, Hashable {
 
 public struct VisualFlowLadder {
 
+    private static let maxConversations = 50
+    private static let maxStepsPerLadder = 200
+
     public static func buildLadders(packets: [PacketRecord]) -> [TCPConversationLadder] {
         var ladders: [String: TCPConversationLadder] = [:]
         var seenSeqMap: [String: Set<UInt32>] = [:]
@@ -105,6 +108,10 @@ public struct VisualFlowLadder {
                 }
             }
 
+            if ladders[convKey] == nil && ladders.count >= maxConversations {
+                continue // Protect against memory exhaustion under massive stream counts
+            }
+
             var ladder = ladders[convKey] ?? TCPConversationLadder(
                 clientHost: "\(clientIP):\(clientPort)",
                 serverHost: "\(serverIP):\(serverPort)",
@@ -119,6 +126,13 @@ public struct VisualFlowLadder {
                 totalBytes: 0,
                 connectionState: "INIT"
             )
+
+            // Skip step creation if this ladder has reached maximum bounds
+            guard ladder.steps.count < maxStepsPerLadder else {
+                ladder.totalBytes += max(0, p.length)
+                ladders[convKey] = ladder
+                continue
+            }
 
             // Flags parsing
             var flagList: [String] = []
@@ -135,20 +149,24 @@ public struct VisualFlowLadder {
             var seenSeq = seenSeqMap[convKey] ?? Set<UInt32>()
             let isRetransmission = seq > 0 && seenSeq.contains(seq) && !flagList.contains("ACK")
             if !isRetransmission && seq > 0 {
-                seenSeq.insert(seq)
-                seenSeqMap[convKey] = seenSeq
+                if seenSeq.count < 1000 {
+                    seenSeq.insert(seq)
+                    seenSeqMap[convKey] = seenSeq
+                }
             }
 
             let firstTs = ladder.steps.first?.timestamp ?? p.timestamp
-            let relativeMs = (p.timestamp - firstTs) * 1000.0
+            let relativeMs = (p.timestamp.isFinite && firstTs.isFinite) ? max(0.0, (p.timestamp - firstTs) * 1000.0) : 0.0
 
             // Latency / RTT calculation
             var rtt: Double? = nil
             if let prev = ladder.steps.last {
                 if prev.isClientToServer != (p.source == clientIP) {
-                    let deltaMs = (p.timestamp - prev.timestamp) * 1000.0
-                    if deltaMs >= 0 && deltaMs < 10000.0 {
-                        rtt = deltaMs
+                    if p.timestamp.isFinite && prev.timestamp.isFinite {
+                        let deltaMs = (p.timestamp - prev.timestamp) * 1000.0
+                        if deltaMs >= 0 && deltaMs < 10000.0 {
+                            rtt = deltaMs
+                        }
                     }
                 }
             }
@@ -161,7 +179,9 @@ public struct VisualFlowLadder {
             } else if flagList.contains("ACK") && ladder.connectionState == "SYN/ACK RECEIVED" {
                 ladder.connectionState = "ESTABLISHED"
                 if ladder.handshakeRttMs == nil, let initialSyn = ladder.steps.first(where: { $0.flags.contains("SYN") }) {
-                    ladder.handshakeRttMs = (p.timestamp - initialSyn.timestamp) * 1000.0
+                    if p.timestamp.isFinite && initialSyn.timestamp.isFinite {
+                        ladder.handshakeRttMs = max(0.0, (p.timestamp - initialSyn.timestamp) * 1000.0)
+                    }
                 }
             } else if flagList.contains("FIN") {
                 ladder.connectionState = "CLOSING (FIN)"
@@ -172,18 +192,20 @@ public struct VisualFlowLadder {
             // TTFB (Time to First Byte)
             if ladder.ttfbMs == nil && (p.info.contains("200 OK") || p.info.contains("TLS Server Hello")) {
                 if let req = ladder.steps.first(where: { $0.summary.contains("GET") || $0.summary.contains("Client Hello") }) {
-                    ladder.ttfbMs = (p.timestamp - req.timestamp) * 1000.0
+                    if p.timestamp.isFinite && req.timestamp.isFinite {
+                        ladder.ttfbMs = max(0.0, (p.timestamp - req.timestamp) * 1000.0)
+                    }
                 }
             }
 
             if isRetransmission {
                 ladder.retransmissionCount += 1
             }
-            ladder.totalBytes += p.length
+            ladder.totalBytes += max(0, p.length)
 
             let step = FlowLadderStep(
                 stepIndex: ladder.steps.count + 1,
-                timestamp: p.timestamp,
+                timestamp: p.timestamp.isFinite ? p.timestamp : Date().timeIntervalSince1970,
                 relativeTimeMs: relativeMs,
                 fromHost: "\(p.source):\(srcPort)",
                 toHost: "\(p.destination):\(dstPort)",
@@ -193,7 +215,7 @@ public struct VisualFlowLadder {
                 flags: flagList,
                 seq: seq,
                 ack: ack,
-                payloadBytes: p.length,
+                payloadBytes: max(0, p.length),
                 rttMs: rtt,
                 isRetransmission: isRetransmission,
                 isZeroWindow: isZeroWindow,

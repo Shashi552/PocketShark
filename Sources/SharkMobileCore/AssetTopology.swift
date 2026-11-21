@@ -41,21 +41,24 @@ public struct DiscoveredHost: Identifiable, Hashable, Codable {
         self.activeRoles = activeRoles
         self.openPorts = openPorts
         self.packetCount = packetCount
-        self.bytesTransferred = bytesTransferred
-        self.firstSeen = firstSeen
-        self.lastSeen = lastSeen
+        self.bytesTransferred = max(0, bytesTransferred)
+        let now = Date().timeIntervalSince1970
+        self.firstSeen = (firstSeen.isFinite && firstSeen >= 0) ? firstSeen : now
+        self.lastSeen = (lastSeen.isFinite && lastSeen >= 0) ? lastSeen : now
         self.countryFlag = countryFlag
         self.countryName = countryName
         self.asnInfo = asnInfo
     }
 }
 
+@MainActor
 public final class AssetTopology: ObservableObject {
     @Published public var assets: [DiscoveredHost] = []
     public var hosts: [DiscoveredHost] { return assets }
     @Published public var totalDiscoveredHosts: Int = 0
     @Published public var gatewayHost: DiscoveredHost?
 
+    private let maxHosts: Int = 500
     private var hostMap: [String: DiscoveredHost] = [:]
 
     public init() {}
@@ -148,16 +151,25 @@ public final class AssetTopology: ObservableObject {
         packet: PacketRecord,
         isSource: Bool
     ) {
+        let safeTimestamp = (timestamp.isFinite && timestamp >= 0) ? timestamp : Date().timeIntervalSince1970
+        let safeBytes = max(0, bytes)
+
+        if hostMap[ip] == nil && hostMap.count >= maxHosts {
+            if let lowestKey = hostMap.min(by: { $0.value.packetCount < $1.value.packetCount })?.key {
+                hostMap.removeValue(forKey: lowestKey)
+            }
+        }
+
         var host = hostMap[ip] ?? DiscoveredHost(
             ip: ip,
             mac: mac,
-            firstSeen: timestamp,
-            lastSeen: timestamp
+            firstSeen: safeTimestamp,
+            lastSeen: safeTimestamp
         )
 
-        host.lastSeen = timestamp
+        host.lastSeen = safeTimestamp
         host.packetCount += 1
-        host.bytesTransferred += bytes
+        host.bytesTransferred += safeBytes
 
         if host.mac.isEmpty && !mac.isEmpty {
             host.mac = mac

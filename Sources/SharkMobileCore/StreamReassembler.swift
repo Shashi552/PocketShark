@@ -19,18 +19,25 @@ public struct StreamReassembler {
         let epB = selectedPacket.destination
 
         var chunks: [StreamPayloadChunk] = []
+        let maxChunks = 2_000
 
         for p in packets {
+            guard chunks.count < maxChunks else { break }
             let isForward = (p.source == epA && p.destination == epB)
             let isReverse = (p.source == epB && p.destination == epA)
 
             if isForward || isReverse {
-                // Extract application payload beyond TCP/IP headers
-                if p.rawData.count > 54 {
-                    let payloadData = p.rawData.subdata(in: 54..<p.rawData.count)
+                // Dynamically determine L7 application payload offset beyond TCP/IP headers
+                var payloadOffset = 54
+                if let tcpLayer = p.layers.first(where: { $0.name.contains("Transmission Control Protocol") }),
+                   let range = tcpLayer.byteRange {
+                    payloadOffset = range.upperBound
+                }
+
+                if p.rawData.count > payloadOffset {
+                    let payloadData = p.rawData.subdata(in: payloadOffset..<p.rawData.count)
                     if !payloadData.isEmpty {
-                        let text = String(data: payloadData, encoding: .utf8) ??
-                                   payloadData.map { (0x20...0x7E).contains($0) ? String(UnicodeScalar($0)) : "." }.joined()
+                        let text = String(decoding: payloadData, as: UTF8.self)
                         let hex = payloadData.prefix(32).map { String(format: "%02x", $0) }.joined(separator: " ")
                         chunks.append(StreamPayloadChunk(isClientToServer: isForward, text: text, hexData: hex))
                     }
