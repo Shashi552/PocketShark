@@ -21,7 +21,7 @@ public struct FlowLadderStep: Identifiable, Hashable {
 }
 
 public struct TCPConversationLadder: Identifiable, Hashable {
-    public var id: String { "\(clientHost) <-> \(serverHost)" }
+    public var id: String { "\(clientIP):\(clientPort) <-> \(serverIP):\(serverPort)" }
     public let clientHost: String
     public let serverHost: String
     public let clientIP: String

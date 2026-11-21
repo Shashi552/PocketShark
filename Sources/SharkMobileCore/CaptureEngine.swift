@@ -169,8 +169,26 @@ public final class CaptureEngine: ObservableObject {
 
     public func ingestPacket(rawData: Data, interface: String) {
         // Filter by interface if not "All Interfaces"
-        if selectedInterface != "All Interfaces" && !interface.contains(selectedInterface.prefix(3)) {
-            return
+        if selectedInterface != "All Interfaces" {
+            let lowerSelected = selectedInterface.lowercased()
+            let lowerIface = interface.lowercased()
+            let matches: Bool
+            if lowerSelected.contains("ble") || lowerSelected.contains("bluetooth") {
+                matches = lowerIface.contains("ble") || lowerIface.contains("bluetooth")
+            } else if lowerSelected.contains("en0") {
+                matches = lowerIface.contains("en0")
+            } else if lowerSelected.contains("en1") {
+                matches = lowerIface.contains("en1")
+            } else if lowerSelected.contains("lo") {
+                matches = lowerIface.contains("lo")
+            } else if lowerSelected.contains("pdp_ip") {
+                matches = lowerIface.contains("pdp_ip")
+            } else if lowerSelected.contains("utun") {
+                matches = lowerIface.contains("utun")
+            } else {
+                matches = lowerIface.contains(selectedInterface.prefix(4).lowercased())
+            }
+            if !matches { return }
         }
 
         let now = Date().timeIntervalSince1970
@@ -226,10 +244,19 @@ public final class CaptureEngine: ObservableObject {
         assetTopology.process(packet: record)
         discoveredAssets = assetTopology.assets
 
-        // Periodically certify live evidence
-        if capturedCount > 0 && capturedCount % 50 == 0 {
-            let pcapData = PcapManager.writePcap(packets: packets)
-            _ = missionManager.certifyEvidence(fileName: "live_checkpoint_\(capturedCount).pcap", data: pcapData, packetCount: packets.count)
+        // Periodically certify live evidence asynchronously without blocking main UI thread
+        if capturedCount > 0 && capturedCount % 100 == 0 {
+            let snapshot = Array(packets.suffix(100))
+            let countSnapshot = capturedCount
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let pcapData = PcapManager.writePcap(packets: snapshot)
+                let hash = TacticalMissionManager.computeSHA256(data: pcapData)
+                Task { @MainActor [weak self] in
+                    guard let strongSelf = self else { return }
+                    _ = strongSelf.missionManager.certifyEvidence(fileName: "live_checkpoint_\(countSnapshot).pcap", data: pcapData, packetCount: snapshot.count)
+                    strongSelf.missionManager.log(severity: "INFO", tag: "VAULT", message: "Checkpoint #\(countSnapshot) certified asynchronously. SHA-256: \(hash.prefix(12))...")
+                }
+            }
         }
 
         // FIFO buffer bound enforcement

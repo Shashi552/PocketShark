@@ -115,7 +115,7 @@ public final class TacticalMissionManager: ObservableObject {
         }
     }
 
-    public func computeSHA256(data: Data) -> String {
+    nonisolated public static func computeSHA256(data: Data) -> String {
         #if canImport(CommonCrypto)
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
         data.withUnsafeBytes { buffer in
@@ -126,6 +126,10 @@ public final class TacticalMissionManager: ObservableObject {
         // Fallback simple hex hash
         return String(format: "%016llx", UInt64(data.count))
         #endif
+    }
+
+    public func computeSHA256(data: Data) -> String {
+        return Self.computeSHA256(data: data)
     }
 
     public func certifyEvidence(fileName: String, data: Data, packetCount: Int) -> ChainOfCustodyRecord {

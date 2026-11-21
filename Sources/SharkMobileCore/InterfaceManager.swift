@@ -25,7 +25,7 @@ public struct NetworkInterfaceInfo: Identifiable, Hashable {
     }
 
     public init(name: String, ipAddress: String, netmask: String, type: InterfaceType, isRunning: Bool, isUp: Bool, supportsMulticast: Bool, isLoopback: Bool) {
-        self.id = "\(name)-\(ipAddress)"
+        self.id = ipAddress.isEmpty ? "\(name)-\(type.rawValue)-\(isLoopback ? "lo" : "ext")" : "\(name)-\(ipAddress)"
         self.name = name
         self.ipAddress = ipAddress
         self.netmask = netmask

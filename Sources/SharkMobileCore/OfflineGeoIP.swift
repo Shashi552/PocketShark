@@ -108,6 +108,18 @@ public struct OfflineGeoIP {
 
     public static func lookup(ipString: String) -> GeoIPLookupResult {
         guard let ipVal = parseIPv4(ipString) else {
+            let lower = ipString.lowercased()
+            if lower == "::1" {
+                return GeoIPLookupResult(ip: ipString, countryCode: "LOC", countryName: "IPv6 Loopback (RFC 4291)", flagEmoji: "🔄", asn: "AS-LOCAL", organization: "Local Host Loopback", isPrivate: true)
+            } else if lower.hasPrefix("fe80:") {
+                return GeoIPLookupResult(ip: ipString, countryCode: "LL", countryName: "IPv6 Link-Local (RFC 4291)", flagEmoji: "🔗", asn: "AS-LINKLOCAL", organization: "Local Link Segment", isPrivate: true)
+            } else if lower.hasPrefix("fc") || lower.hasPrefix("fd") {
+                return GeoIPLookupResult(ip: ipString, countryCode: "ULA", countryName: "IPv6 Unique Local (RFC 4193)", flagEmoji: "🏠", asn: "AS-PRIVATE", organization: "Private IPv6 Intranet", isPrivate: true)
+            } else if lower.hasPrefix("2001:4860:") {
+                return GeoIPLookupResult(ip: ipString, countryCode: "US", countryName: "United States (Google IPv6)", flagEmoji: "🇺🇸", asn: "AS15169", organization: "Google LLC", isPrivate: false)
+            } else if lower.hasPrefix("2606:4700:") {
+                return GeoIPLookupResult(ip: ipString, countryCode: "US", countryName: "United States (Cloudflare IPv6)", flagEmoji: "🇺🇸", asn: "AS13335", organization: "Cloudflare, Inc.", isPrivate: false)
+            }
             return GeoIPLookupResult(
                 ip: ipString,
                 countryCode: "--",

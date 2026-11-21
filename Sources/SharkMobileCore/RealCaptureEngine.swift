@@ -148,6 +148,7 @@ public final class BpfPacketCapture {
 
     public func stop() {
         isRunning = false
+        packetHandler = nil
         if bpfFd >= 0 {
             close(bpfFd)
             bpfFd = -1

@@ -77,23 +77,39 @@ public struct PacketDissector {
         }
 
         // Ethernet II vs Raw IP detection
-        let isEthernet = (rawData[12] == 0x08 && rawData[13] == 0x00) || (rawData[12] == 0x86 && rawData[13] == 0xDD) || (rawData[12] == 0x08 && rawData[13] == 0x06)
+        let rawEtherType = UInt16(rawData[12]) << 8 | UInt16(rawData[13])
+        let isEthernet = (rawEtherType == 0x0800 || rawEtherType == 0x86DD || rawEtherType == 0x0806 || rawEtherType == 0x8100 || rawEtherType == 0x88A8)
 
         if isEthernet {
             let ethSrc = formatMAC(rawData.subdata(in: 6..<12))
             let ethDst = formatMAC(rawData.subdata(in: 0..<6))
-            let etherType = UInt16(rawData[12]) << 8 | UInt16(rawData[13])
+            var etherType = rawEtherType
+            offset = 14
+
+            var ethFields = [
+                FieldDetail(name: "Destination MAC", value: ethDst, byteRange: 0..<6),
+                FieldDetail(name: "Source MAC", value: ethSrc, byteRange: 6..<12),
+                FieldDetail(name: "Type", value: String(format: "0x%04X", etherType), byteRange: 12..<14)
+            ]
+
+            // 802.1Q VLAN Tagging (0x8100) or 802.1ad QinQ (0x88A8)
+            if (etherType == 0x8100 || etherType == 0x88A8) && rawData.count >= 18 {
+                let vlanTCI = UInt16(rawData[14]) << 8 | UInt16(rawData[15])
+                let vlanId = vlanTCI & 0x0FFF
+                let vlanPrio = (vlanTCI >> 13) & 0x07
+                let innerEtherType = UInt16(rawData[16]) << 8 | UInt16(rawData[17])
+                ethFields.append(FieldDetail(name: "802.1Q Virtual LAN (VLAN ID)", value: "\(vlanId) (Priority: \(vlanPrio))", byteRange: 14..<16))
+                ethFields.append(FieldDetail(name: "Inner Type", value: String(format: "0x%04X", innerEtherType), byteRange: 16..<18))
+                etherType = innerEtherType
+                offset = 18
+            }
+
             layers.append(DissectedLayer(
                 name: "Ethernet II",
                 summary: "Ethernet II, Src: \(ethSrc), Dst: \(ethDst)",
-                fields: [
-                    FieldDetail(name: "Destination MAC", value: ethDst, byteRange: 0..<6),
-                    FieldDetail(name: "Source MAC", value: ethSrc, byteRange: 6..<12),
-                    FieldDetail(name: "Type", value: String(format: "0x%04X", etherType), byteRange: 12..<14)
-                ],
-                byteRange: 0..<14
+                fields: ethFields,
+                byteRange: 0..<offset
             ))
-            offset = 14
 
             if etherType == 0x0806 && rawData.count >= offset + 28 { // ARP
                 proto = .arp
@@ -252,7 +268,11 @@ public struct PacketDissector {
                             payLen = Int(payload[wsOffset]) << 8 | Int(payload[wsOffset + 1])
                             wsOffset += 2
                         } else if payLen == 127 && payload.count >= wsOffset + 8 {
-                            payLen = Int(payload[wsOffset + 6]) << 8 | Int(payload[wsOffset + 7]) // Read low 16
+                            var len64: UInt64 = 0
+                            for i in 0..<8 {
+                                len64 = (len64 << 8) | UInt64(payload[wsOffset + i])
+                            }
+                            payLen = Int(min(len64, UInt64(Int.max)))
                             wsOffset += 8
                         }
 
@@ -637,14 +657,24 @@ public struct PacketDissector {
                     FieldDetail(name: "Source Port", value: "\(srcPort)", byteRange: offset..<offset + 2),
                     FieldDetail(name: "Destination Port", value: "\(dstPort)", byteRange: offset + 2..<offset + 4)
                 ], byteRange: offset..<rawData.count))
-            } else if nextHeader == 17 && rawData.count >= offset + 8 { // UDP over IPv6
-                proto = .udp
-                let srcPort = Int(rawData[offset]) << 8 | Int(rawData[offset + 1])
-                let dstPort = Int(rawData[offset + 2]) << 8 | Int(rawData[offset + 3])
-                info = "IPv6 UDP \(srcPort) → \(dstPort)"
-                layers.append(DissectedLayer(name: "User Datagram Protocol", summary: info, fields: [
-                    FieldDetail(name: "Source Port", value: "\(srcPort)", byteRange: offset..<offset + 2),
-                    FieldDetail(name: "Destination Port", value: "\(dstPort)", byteRange: offset + 2..<offset + 4)
+            } else if nextHeader == 58 && rawData.count >= offset + 4 { // ICMPv6
+                proto = .icmp
+                let icmpType = rawData[offset]
+                let icmpCode = rawData[offset + 1]
+                let typeStr: String
+                switch icmpType {
+                case 128: typeStr = "Echo Request (ping6)"
+                case 129: typeStr = "Echo Reply (ping6)"
+                case 133: typeStr = "Router Solicitation"
+                case 134: typeStr = "Router Advertisement"
+                case 135: typeStr = "Neighbor Solicitation"
+                case 136: typeStr = "Neighbor Advertisement"
+                default: typeStr = "ICMPv6 Type \(icmpType)"
+                }
+                info = "\(typeStr) Code=\(icmpCode)"
+                layers.append(DissectedLayer(name: "Internet Control Message Protocol v6", summary: info, fields: [
+                    FieldDetail(name: "Type", value: "\(icmpType) (\(typeStr))", byteRange: offset..<offset + 1),
+                    FieldDetail(name: "Code", value: "\(icmpCode)", byteRange: offset + 1..<offset + 2)
                 ], byteRange: offset..<rawData.count))
             }
         }
@@ -703,19 +733,51 @@ public struct PacketDissector {
     }
 
     private static func extractSNI(payload: Data) -> String? {
-        guard payload.count > 43 else { return nil }
-        for i in 40..<(payload.count - 9) {
-            if payload[i] == 0x00 && payload[i + 1] == 0x00 {
-                let extLen = Int(payload[i + 2]) << 8 | Int(payload[i + 3])
-                if i + 4 + extLen <= payload.count && extLen > 4 {
-                    let nameLen = Int(payload[i + 7]) << 8 | Int(payload[i + 8])
-                    if nameLen > 0 && i + 9 + nameLen <= payload.count {
-                        let nameData = payload.subdata(in: (i + 9)..<(i + 9 + nameLen))
-                        let sniStr = String(decoding: nameData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                        return sniStr.isEmpty ? nil : sniStr
-                    }
+        guard payload.count >= 43 else { return nil }
+        guard payload[0] == 0x16, payload.count >= 6, payload[5] == 0x01 else { return nil }
+
+        var idx = 9 // Skip Record Header (5) + Handshake Type (1) + Length (3)
+        guard idx + 34 <= payload.count else { return nil }
+        idx += 2 // Skip Client Version
+        idx += 32 // Skip Client Random
+
+        // Session ID
+        guard idx < payload.count else { return nil }
+        let sessionIDLen = Int(payload[idx])
+        idx += 1 + sessionIDLen
+
+        // Cipher Suites
+        guard idx + 2 <= payload.count else { return nil }
+        let cipherLen = Int(payload[idx]) << 8 | Int(payload[idx + 1])
+        idx += 2 + cipherLen
+
+        // Compression Methods
+        guard idx < payload.count else { return nil }
+        let compLen = Int(payload[idx])
+        idx += 1 + compLen
+
+        // Extensions
+        guard idx + 2 <= payload.count else { return nil }
+        let extsLen = Int(payload[idx]) << 8 | Int(payload[idx + 1])
+        idx += 2
+
+        let endExts = min(payload.count, idx + extsLen)
+        while idx + 4 <= endExts {
+            let extType = Int(payload[idx]) << 8 | Int(payload[idx + 1])
+            let extLen = Int(payload[idx + 2]) << 8 | Int(payload[idx + 3])
+            idx += 4
+            guard idx + extLen <= endExts else { break }
+
+            if extType == 0x0000 && extLen >= 5 { // Server Name Indication (SNI)
+                let nameType = payload[idx + 2]
+                let nameLen = Int(payload[idx + 3]) << 8 | Int(payload[idx + 4])
+                if nameType == 0 && idx + 5 + nameLen <= idx + extLen {
+                    let nameData = payload.subdata(in: (idx + 5)..<(idx + 5 + nameLen))
+                    let name = String(decoding: nameData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                    return name.isEmpty ? nil : name
                 }
             }
+            idx += extLen
         }
         return nil
     }
@@ -724,10 +786,22 @@ public struct PacketDissector {
         var idx = startOffset
         var parts: [String] = []
         var steps = 0
+        var jumps = 0
+
         while idx < rawData.count && steps < 64 {
             steps += 1
             let len = Int(rawData[idx])
-            if len == 0 || (len & 0xC0) != 0 { break }
+            if len == 0 {
+                break
+            }
+            if (len & 0xC0) == 0xC0 {
+                // Compression pointer
+                guard idx + 1 < rawData.count, jumps < 10 else { break }
+                let ptrOffset = (Int(len & 0x3F) << 8) | Int(rawData[idx + 1])
+                idx = ptrOffset
+                jumps += 1
+                continue
+            }
             idx += 1
             if idx + len <= rawData.count {
                 let partData = rawData.subdata(in: idx..<idx + len)
