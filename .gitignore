@@ -9,3 +9,6 @@
 SharkMobileCLI
 build/
 .build/
+SharkMobileMac
+*.json
+execute_agena_*.py

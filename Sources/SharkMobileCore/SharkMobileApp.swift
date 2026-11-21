@@ -1,4 +1,4 @@
-#if canImport(UIKit) && !os(macOS)
+#if !BUILDING_CLI
 import SwiftUI
 
 @main
@@ -8,6 +8,9 @@ public struct SharkMobileApp: App {
     public var body: some Scene {
         WindowGroup {
             SharkMobileMainView()
+                #if os(macOS)
+                .frame(minWidth: 960, minHeight: 680)
+                #endif
         }
     }
 }
